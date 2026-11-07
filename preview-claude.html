@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Игрок + каменный топор — v2 (интегрировано)</title>
+<style>
+:root{--bg:#14161a;--fg:#e8e6e1;--pn:rgba(24,26,30,.82);--ac:#e0883a;--bd:#3a3d44;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#14161a;--fg:#e8e6e1}}
+*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#ui{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));display:flex;flex-direction:column;gap:8px;max-width:calc(100vw - 20px)}
+.pn{background:var(--pn);border:1px solid var(--bd);border-radius:12px;padding:8px;backdrop-filter:blur(8px)}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.t{font-size:11px;opacity:.6;text-transform:uppercase;letter-spacing:.08em;margin:0 0 6px}
+button{background:#262a31;color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+button.on{background:var(--ac);border-color:var(--ac);color:#1a1208;font-weight:600}
+label{display:flex;gap:6px;align-items:center;font-size:13px}
+#tune{position:fixed;right:10px;top:calc(10px + env(safe-area-inset-top,0px));font-size:13px}#tune label{margin-top:6px;justify-content:space-between}#tune input{width:120px}
+#hint{position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));font-size:12px;opacity:.65;text-align:right;pointer-events:none}
+#load{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);transition:opacity .4s}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="load">Загрузка модели…</div>
+<div id="ui">
+ <div class="pn"><p class="t">Вид</p><div class="row"><button data-v="3" class="on">От 3-го лица</button><button data-v="1">От 1-го лица</button></div></div>
+ <div class="pn"><p class="t">Анимация</p><div class="row"><button data-a="idle" class="on">Стойка</button><button data-a="atk1">Удар 1 · сверху</button><button data-a="atk2">Удар 2 · сбоку</button></div>
+ <div class="row" style="margin-top:8px"><label><input type="checkbox" id="rep" checked>повтор</label><label>скорость <input type="range" id="spd" min=".3" max="1.6" step=".05" value="1"></label></div></div>
+</div>
+<details class="pn" id="tune"><summary style="cursor:pointer">Настройка хвата</summary>
+<label>размер топора <input type="range" id="sS" min=".3" max=".8" step=".01" value=".52"></label>
+<label>сжатие пальцев <input type="range" id="sC" min=".5" max="1.3" step=".02" value="1"></label>
+<label>большой палец <input type="range" id="sT" min="0" max="1.3" step=".02" value=".8"></label>
+<label>хват по рукояти <input type="range" id="sG" min="0" max=".45" step=".01" value=".14"></label>
+<label>вдоль пальцев <input type="range" id="sX" min=".3" max="1.1" step=".01" value=".72"></label>
+<label>от ладони <input type="range" id="sP" min=".0" max=".07" step=".002" value=".032"></label>
+<label>поворот топора <input type="range" id="sR" min="-90" max="90" step="1" value="90"></label>
+</details>
+<div id="hint">1·2·3 — анимации &nbsp; V — вид &nbsp; мышь — вращение</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const T=THREE,D=Math.PI/180;
+const cv=document.getElementById('c');
+const R=new T.WebGLRenderer({canvas:cv,antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));R.outputEncoding=T.sRGBEncoding;R.toneMapping=T.ACESFilmicToneMapping;R.toneMappingExposure=1.05;
+R.shadowMap.enabled=true;R.shadowMap.type=T.PCFSoftShadowMap;
+const scene=new T.Scene();
+const cam=new T.PerspectiveCamera(40,1,.02,200);scene.add(cam);
+const ctl=new T.OrbitControls(cam,cv);
+ctl.enableDamping=true;ctl.minDistance=1;ctl.maxDistance=7;ctl.maxPolarAngle=Math.PI*.52;
+
+/* ---------- свет ---------- */
+scene.add(new T.HemisphereLight(0xcfe0ff,0x3a2e24,.8));
+const sun=new T.DirectionalLight(0xfff0dc,2.3);sun.position.set(3,5,3.5);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-2.5,right:2.5,top:2.5,bottom:-2.5,near:1,far:14});sun.shadow.bias=-.0004;sun.shadow.normalBias=.02;scene.add(sun);
+const rim=new T.DirectionalLight(0x7fa8ff,1.1);rim.position.set(-3,2.5,-3);scene.add(rim);
+const fill=new T.DirectionalLight(0xffc9a0,.5);fill.position.set(-3,1,3);scene.add(fill);
+
+/* ---------- окружение ---------- */
+const studio=new T.Group(),field=new T.Group();scene.add(studio,field);
+const disc=new T.Mesh(new T.CylinderGeometry(1.5,1.6,.06,64),new T.MeshStandardMaterial({color:0x2a2d33,roughness:.9}));disc.position.y=-.03;disc.receiveShadow=true;studio.add(disc);
+const ring=new T.Mesh(new T.TorusGeometry(1.5,.012,8,96),new T.MeshBasicMaterial({color:0xe0883a}));ring.rotation.x=Math.PI/2;studio.add(ring);
+const grid=new T.GridHelper(30,60,0x2e3138,0x22252a);grid.position.y=-.07;studio.add(grid);
+const gr=new T.Mesh(new T.CircleGeometry(80,48),new T.MeshStandardMaterial({color:0x5b6b35,roughness:1}));gr.rotation.x=-Math.PI/2;gr.receiveShadow=true;field.add(gr);
+(function(){let s=7;const r=()=>(s=(s*16807)%2147483647)/2147483647;
+ const rk=new T.MeshStandardMaterial({color:0x7d746a,roughness:.95,flatShading:true}),tr=new T.MeshStandardMaterial({color:0x2e4a2a,roughness:1,flatShading:true}),tk=new T.MeshStandardMaterial({color:0x4a3524,roughness:1});
+ for(let i=0;i<46;i++){const a=r()*6.28,d=6+r()*34,x=Math.sin(a)*d,z=Math.cos(a)*d;
+  if(r()<.5){const m=new T.Mesh(new T.IcosahedronGeometry(.5+r()*1.6,0),rk);m.position.set(x,.2,z);m.scale.y=.6+r()*.5;m.rotation.set(r()*3,r()*3,r()*3);m.castShadow=m.receiveShadow=true;field.add(m)}
+  else{const h=3+r()*4,g=new T.Group();g.position.set(x,0,z);const t=new T.Mesh(new T.CylinderGeometry(.12,.18,h*.4,6),tk);t.position.y=h*.2;g.add(t);
+   for(let k=0;k<3;k++){const c=new T.Mesh(new T.ConeGeometry(1.5-k*.35,h*.5,7),tr);c.position.y=h*.35+k*h*.2;c.castShadow=true;g.add(c)}field.add(g)}}
+ const st=new T.Mesh(new T.CylinderGeometry(.35,.4,.7,12),tk);st.position.set(.2,.35,-2.6);st.castShadow=st.receiveShadow=true;field.add(st);
+})();
+
+/* ---------- загрузка моделей из файлов ---------- */
+const gl=new T.GLTFLoader();
+Promise.all([
+  new Promise((ok,no)=>gl.load('./scr/3d/player_claude.glb',ok,undefined,no)),
+  new Promise((ok,no)=>gl.load('./scr/3d/axe_claude.glb',ok,undefined,no))
+]).then(([p,a])=>{init(p,a);const l=document.getElementById('load');l.style.opacity=0;setTimeout(()=>l.remove(),500)})
+ .catch(e=>{console.error(e);document.getElementById('load').textContent='Ошибка: '+(e&&e.message||e)});
+
+const $=s=>document.querySelectorAll(s),val=id=>+document.getElementById(id).value;
+const V=(x,y,z)=>new T.Vector3(x,y,z),Q=()=>new T.Quaternion();
+const sm=u=>u*u*(3-2*u);
+
+function init(pg,ag){
+ const model=pg.scene;scene.add(model);
+ const meshes=[];
+ model.traverse(o=>{if(o.isMesh){o.castShadow=o.receiveShadow=true;o.frustumCulled=false;meshes.push(o)}});
+ model.updateMatrixWorld(true);
+
+ /* кости */
+ const B={},rest={};
+ model.traverse(o=>{if(o.isBone)B[o.name.replace(/^mixamorig:?/,'').replace(/_\d+$/,'')]=o});
+ for(const k in B){const b=B[k];rest[k]={q:b.quaternion.clone(),s:b.scale.clone(),wq:b.getWorldQuaternion(Q())}}
+ const wp=b=>b.getWorldPosition(V(0,0,0));
+ const UP=V(0,1,0),RT=wp(B.RightShoulder).sub(wp(B.LeftShoulder)).setY(0).normalize();
+ const FW=V(0,0,0).crossVectors(UP,RT),LF=RT.clone().negate();
+ const REST_ANKLE=wp(B.LeftFoot).y;
+ const eyeRest=wp(B.Head).add(V(0,.14,0)).addScaledVector(FW,.03);
+
+ /* системы координат кистей в позе покоя */
+ const HF={},AXC={},AXF={},AXN={},SG={};
+ const loc=(k,v)=>v.clone().applyQuaternion(rest[k].wq.clone().invert());
+ ['Left','Right'].forEach(s=>{
+  const h=wp(B[s+'Hand']),m=wp(B[s+'HandMiddle1']),i=wp(B[s+'HandIndex1']),p=wp(B[s+'HandPinky1']);
+  const f=m.clone().sub(h);const palmLen=f.length();f.normalize();
+  const a=i.clone().sub(p);a.addScaledVector(f,-a.dot(f)).normalize();
+  const c=V(0,0,0).crossVectors(f,a);
+  const n=c.clone();if(n.dot(V(-h.x,0,0))<0)n.negate();
+  HF[s]={f,a,c,n,palmLen,h0:h.clone(),wq:rest[s+'Hand'].wq.clone(),inv:B[s+'Hand'].matrixWorld.clone().invert(),ws:V(0,0,0).setFromMatrixScale(B[s+'Hand'].matrixWorld).x};
+  SG[s]={curl:Math.sign(V(0,0,0).crossVectors(a,f).dot(n))||1,tf:Math.sign(c.dot(n))||1,tn:Math.sign(V(0,0,0).crossVectors(n,a).dot(f))||1};
+  ['Index','Middle','Ring','Pinky'].forEach(F=>[1,2,3].forEach(k=>{const key=s+'Hand'+F+k;AXC[key]=loc(key,a)}));
+  [1,2,3].forEach(k=>{const key=s+'HandThumb'+k;AXF[key]=loc(key,f);AXN[key]=loc(key,n)});
+ });
+
+ /* топор */
+ const axeProto=ag.scene;
+ axeProto.traverse(o=>{if(o.isMesh){o.castShadow=o.receiveShadow=true;const m=o.material;m.side=T.DoubleSide;if(m.map)m.map.anisotropy=8;m.metalness=0;m.roughness=Math.max(m.roughness??1,.75)}});
+ const holder=new T.Group(),axe=axeProto.clone(true);holder.add(axe);B.RightHand.add(holder);
+ function placeAxe(roll,fp){
+  const H=HF.Right,gx=val('sX'),gp=val('sP'),G=val('sG'),S=val('sS');
+  const pos=H.h0.clone().addScaledVector(H.f,H.palmLen*gx).addScaledVector(H.n,gp).applyMatrix4(H.inv);
+  holder.position.copy(pos);
+  const fl=H.f.clone().applyQuaternion(H.wq.clone().invert()),al=H.a.clone().applyQuaternion(H.wq.clone().invert());
+  const cl=V(0,0,0).crossVectors(fl,al);
+  const qb=Q().setFromRotationMatrix(new T.Matrix4().makeBasis(fl,al,cl));
+  holder.quaternion.copy(qb).multiply(Q().setFromAxisAngle(V(0,1,0),(roll+val('sR'))*D));
+  holder.scale.setScalar(S/H.ws/(fp?1:1));
+  axe.position.set(0,-G,0);
+ }
+
+ /* помощники поз */
+ const setWQ=(b,q)=>{const pq=b.parent.getWorldQuaternion(Q());b.quaternion.copy(pq.invert().multiply(q));b.updateMatrixWorld(true)};
+ const rotW=(b,ax,ang)=>setWQ(b,Q().setFromAxisAngle(ax,ang).multiply(b.getWorldQuaternion(Q())));
+ const aimW=(b,from,to)=>setWQ(b,Q().setFromUnitVectors(from,to).multiply(b.getWorldQuaternion(Q())));
+ function ik(arm,fore,hand,target,pole){
+  const S=wp(arm),E=wp(fore),W=wp(hand);const l1=E.distanceTo(S),l2=W.distanceTo(E);
+  const d=target.clone().sub(S);let dist=Math.min(d.length(),l1+l2-1e-4);dist=Math.max(dist,Math.abs(l1-l2)+1e-3);d.normalize();
+  const x=(l1*l1-l2*l2+dist*dist)/(2*dist),h=Math.sqrt(Math.max(l1*l1-x*x,0));
+  const p=pole.clone().addScaledVector(d,-pole.dot(d)).normalize();
+  const En=S.clone().addScaledVector(d,x).addScaledVector(p,h);
+  aimW(arm,E.clone().sub(S).normalize(),En.sub(S).normalize());
+  const E2=wp(fore),W2=wp(hand),T2=S.clone().addScaledVector(d,dist);
+  aimW(fore,W2.sub(E2).normalize(),T2.sub(E2).normalize());
+ }
+ function orientHand(side,f2,a2){
+  const H=HF[side],m0=new T.Matrix4().makeBasis(H.f,H.a,H.c);
+  const m1=new T.Matrix4().makeBasis(f2,a2,V(0,0,0).crossVectors(f2,a2));
+  const qm=Q().setFromRotationMatrix(m1.multiply(m0.clone().transpose()));
+  setWQ(B[side+'Hand'],qm.multiply(H.wq));
+ }
+ const q1=Q(),q2=Q();
+ function fingers(side,curl,thumb){
+  const g=SG[side];
+  ['Index','Middle','Ring','Pinky'].forEach((F,fi)=>[70,80,55].forEach((deg,n)=>{
+   const k=side+'Hand'+F+(n+1);B[k].quaternion.copy(rest[k].q).multiply(q1.setFromAxisAngle(AXC[k],g.curl*deg*D*curl*[1,1.05,1.1,1.15][fi]))}));
+  [[35,22],[30,8],[30,4]].forEach(([af,an],n)=>{
+   const k=side+'HandThumb'+(n+1);
+   B[k].quaternion.copy(rest[k].q).multiply(q1.setFromAxisAngle(AXF[k],g.tf*af*D*thumb)).multiply(q2.setFromAxisAngle(AXN[k],g.tn*an*D*thumb));
+  });
+ }
+ const ARMS=1.4;
+ let fpMode=false;
+
+ function pose(p,fp){
+  for(const k in B){B[k].quaternion.copy(rest[k].q);B[k].scale.copy(rest[k].s)}
+  if(fp){B.LeftArm.scale.multiplyScalar(ARMS);B.RightArm.scale.multiplyScalar(ARMS)}
+  model.position.y=0;model.updateMatrixWorld(true);
+  rotW(B.Hips,UP,p.hy*D);
+  ['Spine','Spine1','Spine2'].forEach(k=>{rotW(B[k],UP,p.sy*D/3);rotW(B[k],LF,p.sx*D/3)});
+  rotW(B.Head,LF,p.hx*D);
+  [['Left',p.ltx,p.ltk],['Right',p.rtx,p.rtk]].forEach(([s,tx,tk])=>{rotW(B[s+'UpLeg'],LF,-tx*D);rotW(B[s+'Leg'],LF,tk*D);rotW(B[s+'Foot'],LF,(tx-tk)*D)});
+  model.updateMatrixWorld(true);
+  model.position.y=REST_ANKLE-Math.min(wp(B.LeftFoot).y,wp(B.RightFoot).y);model.updateMatrixWorld(true);
+  const qT=B.Spine2.getWorldQuaternion(Q()).multiply(rest.Spine2.wq.clone().invert());
+  const Ut=UP.clone().applyQuaternion(qT),Ft=FW.clone().applyQuaternion(qT),Rt=RT.clone().applyQuaternion(qT);
+  const reach=s=>{const a=wp(B[s+'Arm']),e=wp(B[s+'ForeArm']);return a.distanceTo(e)+e.distanceTo(wp(B[s+'Hand']))};
+  const tgt=(S,L,x,y,z)=>S.clone().addScaledVector(Rt,x*L).addScaledVector(Ut,y*L).addScaledVector(Ft,z*L);
+  /* правая рука — топор */
+  const LR=reach('Right'),SR=wp(B.RightArm);
+  ik(B.RightArm,B.RightForeArm,B.RightHand,tgt(SR,LR,p.rx,p.ry,p.rz),Ut.clone().multiplyScalar(-1).addScaledVector(Rt,.5).addScaledVector(Ft,-.3));
+  const ph=p.rphi*D;let a2=Ut.clone().multiplyScalar(Math.cos(ph)).addScaledVector(Ft,Math.sin(ph)).applyAxisAngle(Ut,p.ryaw*D).normalize();
+  const fd=wp(B.RightHand).sub(wp(B.RightForeArm)).normalize();
+  const pr=fd.clone().addScaledVector(a2,-fd.dot(a2)),ln=pr.length();pr.normalize();
+  const gg=V(0,0,0).crossVectors(a2,Rt).normalize();if(gg.dot(pr)<0)gg.negate();
+  const w=Math.min(1,Math.max(0,(ln-.35)/.35));
+  const f2=pr.multiplyScalar(w).addScaledVector(gg,1-w).normalize();
+  orientHand('Right',f2,a2);fingers('Right',p.curl,p.thumb);
+  /* левая рука — свободная */
+  const LL=reach('Left'),SL=wp(B.LeftArm);
+  ik(B.LeftArm,B.LeftForeArm,B.LeftHand,tgt(SL,LL,p.lx,p.ly,p.lz),Ut.clone().multiplyScalar(-1).addScaledVector(Rt,-.5).addScaledVector(Ft,-.3));
+  const fl=wp(B.LeftHand).sub(wp(B.LeftForeArm)).normalize();
+  const al=Ut.clone().multiplyScalar(.8).addScaledVector(Rt,.5);al.addScaledVector(fl,-al.dot(fl)).normalize();
+  orientHand('Left',fl,al);fingers('Left',p.lcurl,.3);
+  model.updateMatrixWorld(true);
+  placeAxe(p.roll,fp);
+ }
+
+ /* ---------- клипы ---------- */
+ const IDLE={hy:0,sx:2,sy:0,hx:0,ltx:4,ltk:6,rtx:-3,rtk:8,rx:.22,ry:-.62,rz:.5,rphi:28,ryaw:6,roll:90,curl:.9,thumb:.8,lx:-.25,ly:-.85,lz:.12,lcurl:.35};
+ const FIDLE=Object.assign({},IDLE,{sx:0,hx:0,rx:.12,ry:.08,rz:.8,rphi:35,ryaw:8,roll:90,curl:.9,lx:-.1,ly:-.05,lz:.72,lcurl:.3});
+ const mk=base=>(t,p,e)=>({t,p:Object.assign({},base,p),e}),k3=mk(IDLE),k1=mk(FIDLE);
+ const CL={
+ 3:{atk1:{dur:1.35,keys:[k3(0,{}),
+   k3(.30,{sx:-12,hx:-8,rx:.15,ry:.78,rz:-.05,rphi:-65,ryaw:0,roll:20,curl:1,lx:-.2,ly:.3,lz:.35,ltx:2,ltk:12,rtx:-6,rtk:14}),
+   k3(.38,{sx:-14,hx:-8,rx:.15,ry:.82,rz:-.08,rphi:-70,ryaw:0,roll:20,curl:1,lx:-.2,ly:.3,lz:.35,ltx:2,ltk:12,rtx:-6,rtk:14}),
+   k3(.52,{sx:28,hx:12,rx:.05,ry:-.15,rz:.92,rphi:135,ryaw:0,roll:0,curl:1,lx:-.3,ly:-.5,lz:.5,ltx:26,ltk:38,rtx:-16,rtk:20},'in'),
+   k3(.78,{sx:32,hx:12,rx:.05,ry:-.55,rz:.78,rphi:160,ryaw:0,roll:0,curl:1,lx:-.3,ly:-.55,lz:.45,ltx:26,ltk:38,rtx:-16,rtk:20}),
+   k3(1.35,{})]},
+  atk2:{dur:1.3,keys:[k3(0,{}),
+   k3(.34,{sy:-42,hy:-14,sx:6,rx:.8,ry:.12,rz:.2,rphi:90,ryaw:-105,roll:0,curl:1,lx:-.1,ly:-.2,lz:.5,ltx:8,ltk:16,rtx:-8,rtk:14}),
+   k3(.42,{sy:-46,hy:-16,sx:6,rx:.82,ry:.12,rz:.15,rphi:90,ryaw:-110,roll:0,curl:1,lx:-.1,ly:-.2,lz:.5,ltx:8,ltk:16,rtx:-8,rtk:14}),
+   k3(.6,{sy:40,hy:20,sx:10,rx:-.15,ry:.05,rz:.92,rphi:90,ryaw:30,roll:0,curl:1,lx:-.5,ly:-.4,lz:.2,ltx:22,ltk:30,rtx:-14,rtk:18},'in'),
+   k3(.82,{sy:55,hy:26,sx:10,rx:-.65,ry:0,rz:.72,rphi:90,ryaw:88,roll:0,curl:1,lx:-.55,ly:-.45,lz:.15,ltx:22,ltk:30,rtx:-14,rtk:18}),
+   k3(1.3,{})]}},
+ 1:{atk1:{dur:1.2,keys:[k1(0,{}),
+   k1(.28,{rx:.22,ry:.48,rz:.34,rphi:-40,ryaw:0,roll:30,curl:1,lx:-.2,ly:.3,lz:.5}),
+   k1(.34,{rx:.22,ry:.5,rz:.32,rphi:-45,ryaw:0,roll:30,curl:1,lx:-.2,ly:.3,lz:.5}),
+   k1(.5,{rx:-.09,ry:0,rz:.86,rphi:125,ryaw:0,roll:0,curl:1,lx:-.2,ly:-.15,lz:.7},'in'),
+   k1(.68,{rx:-.29,ry:-.17,rz:.79,rphi:150,ryaw:0,roll:0,curl:1,lx:-.2,ly:-.15,lz:.7}),
+   k1(1.2,{})]},
+  atk2:{dur:1.2,keys:[k1(0,{}),
+   k1(.3,{rx:.48,ry:.17,rz:.6,rphi:90,ryaw:-100,roll:0,curl:1,lx:-.05,ly:.0,lz:.7}),
+   k1(.38,{rx:.5,ry:.17,rz:.55,rphi:90,ryaw:-105,roll:0,curl:1,lx:-.05,ly:.0,lz:.7}),
+   k1(.54,{rx:-.38,ry:.14,rz:.95,rphi:90,ryaw:25,roll:0,curl:1,lx:-.3,ly:-.05,lz:.6},'in'),
+   k1(.76,{rx:-.72,ry:.1,rz:.83,rphi:90,ryaw:80,roll:0,curl:1,lx:-.4,ly:-.05,lz:.55}),
+   k1(1.2,{})]}}};
+ function sample(keys,tn){let i=0;while(i<keys.length-2&&tn>=keys[i+1].t)i++;const a=keys[i],b=keys[i+1];let u=Math.min(1,Math.max(0,(tn-a.t)/(b.t-a.t)));u=b.e==='in'?u*u*u:sm(u);
+  const o={};for(const k in a.p)o[k]=a.p[k]+(b.p[k]-a.p[k])*u;return o}
+
+ /* ---------- вид / управление ---------- */
+ let view=3,anim='idle',t=0,time=0;
+ function setView(v){view=v;fpMode=v==1;studio.visible=v==3;field.visible=v==1;ctl.enabled=v==3;
+  meshes.forEach(m=>{m.visible=v==3||/arms/i.test(m.material.name||'')});
+  scene.background=new T.Color(v==3?0x14161a:0x9fc3e6);scene.fog=v==3?null:new T.Fog(0x9fc3e6,25,90);
+  if(v==3){cam.fov=40;cam.position.copy(FW).multiplyScalar(2.6).add(RT.clone().multiplyScalar(-.9)).setY(1.2);ctl.target.set(0,.85,0)}
+  else{cam.fov=74;cam.position.copy(eyeRest);cam.up.set(0,1,0);cam.lookAt(eyeRest.clone().addScaledVector(FW,5).addScaledVector(UP,-.7))}
+  cam.updateProjectionMatrix();$('[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v==v));setAnim('idle')}
+ function setAnim(a){anim=a;t=0;$('[data-a]').forEach(b=>b.classList.toggle('on',b.dataset.a==a))}
+ $('[data-v]').forEach(b=>b.onclick=()=>setView(+b.dataset.v));
+ $('[data-a]').forEach(b=>b.onclick=()=>setAnim(b.dataset.a));
+ addEventListener('keydown',e=>{if(e.key=='1')setAnim('idle');if(e.key=='2')setAnim('atk1');if(e.key=='3')setAnim('atk2');if(e.key=='v'||e.key=='V')setView(view==3?1:3)});
+ function resize(){R.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}
+ addEventListener('resize',resize);resize();setView(3);
+
+ const clock=new T.Clock();
+ (function loop(){requestAnimationFrame(loop);
+  const dt=Math.min(clock.getDelta(),.05)*val('spd');time+=dt;
+  const base=view==3?IDLE:FIDLE;let p=base;
+  if(anim!=='idle'){const c=CL[view][anim];t+=dt;if(t>=c.dur){if(document.getElementById('rep').checked)t=-.5;else setAnim('idle')}
+   if(anim!=='idle')p=sample(c.keys,Math.max(0,t)/c.dur)}
+  p=Object.assign({},p);p.curl*=val('sC');p.thumb*=val('sT');
+  if(view==3)p.sx+=Math.sin(time*1.8)*.8;
+  pose(p,view==1);
+  if(view==3)ctl.update();else{cam.position.set(eyeRest.x+Math.sin(time*.5)*.004,eyeRest.y+Math.sin(time*1.6)*.003,eyeRest.z)}
+  R.render(scene,cam)})();
+}
+</script></body></html>

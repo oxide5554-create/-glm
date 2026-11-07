@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Rust — Превью игрока</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #1a1a1a; color: #fff; font-family: Arial, sans-serif; }
+    canvas { display: block; }
+
+    /* HUD */
+    #hud {
+      position: fixed; top: 10px; left: 10px; z-index: 5;
+      background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 6px;
+      font-size: 13px; line-height: 1.6; pointer-events: none;
+    }
+    #hud h1 { margin: 0 0 6px; font-size: 16px; color: #f0c040; }
+    #hud .key { background: #333; padding: 1px 6px; border-radius: 3px; font-family: monospace; }
+
+    /* Кнопки управления */
+    #controls {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      z-index: 5; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+    }
+    button {
+      background: rgba(40,40,40,0.95); color: #fff; border: 1px solid #555;
+      padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px;
+      transition: all 0.15s;
+    }
+    button:hover { background: rgba(80,80,80,0.95); border-color: #888; }
+    button.active { background: #4a7a3a; border-color: #6a9a5a; }
+
+    /* Кроссхейр */
+    #crosshair {
+      position: fixed; top: 50%; left: 50%; width: 6px; height: 6px;
+      background: #fff; border-radius: 50%; transform: translate(-50%, -50%);
+      pointer-events: none; mix-blend-mode: difference; z-index: 4;
+    }
+
+    /* Индикатор загрузки */
+    #loader {
+      position: fixed; inset: 0; background: #000; color: #fff;
+      display: flex; align-items: center; justify-content: center; flex-direction: column;
+      z-index: 100; transition: opacity 0.5s;
+    }
+    #loader h1 { font-size: 28px; margin-bottom: 12px; color: #f0c040; }
+    #loader .bar {
+      width: 320px; height: 8px; background: #222; border-radius: 4px; overflow: hidden;
+    }
+    #loader .fill {
+      height: 100%; width: 0%; background: linear-gradient(90deg, #c0a040, #f0c060);
+      transition: width 0.3s;
+    }
+    #loader .label { margin-top: 10px; font-size: 13px; opacity: 0.7; }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="loader">
+    <h1>RUST — Превью игрока</h1>
+    <div class="bar"><div class="fill" id="load-fill"></div></div>
+    <div class="label" id="load-label">Загрузка моделей…</div>
+  </div>
+
+  <div id="hud">
+    <h1>🎮 Превью игрока</h1>
+    <div><span class="key">Мышь</span> — осмотреться</div>
+    <div><span class="key">WASD</span> — двигаться (только для осмотра)</div>
+    <div><span class="key">ЛКМ</span> — замах топором</div>
+    <div><span class="key">V</span> — переключить 1-е / 3-е лицо</div>
+    <div><span class="key">T</span> — показать/скрыть топор</div>
+    <div><span class="key">C</span> — показать/скрыть игрока</div>
+  </div>
+
+  <div id="crosshair"></div>
+
+  <div id="controls">
+    <button id="btn-1st" class="active">👁️ 1-е лицо</button>
+    <button id="btn-3rd">🎥 3-е лицо</button>
+    <button id="btn-axe" class="active">🪓 Топор: вкл</button>
+    <button id="btn-player" class="active">🧍 Игрок: вкл</button>
+    <button id="btn-swing">🪓 Удар!</button>
+  </div>
+
+  <script type="module" src="./preview.js"></script>
+</body>
+</html>

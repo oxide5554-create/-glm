@@ -1,0 +1,13 @@
+{
+  "name": "rust",
+  "version": "1.0.0",
+  "description": "Rust — single-player build (без папки 3d, без мультиплеера). Оружие будет добавлено с нуля.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

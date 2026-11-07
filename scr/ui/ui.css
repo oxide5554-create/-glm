@@ -1,0 +1,166 @@
+/* ===== Rust UI — простой чёрный стиль ===== */
+
+/* ✅ Canvas на весь экран — никаких полос */
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+}
+canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+#hotbar {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 3px;
+    z-index: 999;
+    pointer-events: auto;
+}
+
+/* ✅ Хотбар поменьше — 48x48 (было 64x64) */
+.slot {
+    width: 48px;
+    height: 48px;
+    border: 2px solid #000;
+    background: #333;
+    position: relative;
+    flex-shrink: 0;
+    overflow: visible;
+}
+
+.slot.empty {
+    border-style: dashed;
+    background: #222;
+}
+
+.slot.active {
+    border-color: #ff0;
+}
+
+.slot.drag-over {
+    border-color: #f0f;
+}
+
+.slot.dragging {
+    opacity: 0.4;
+}
+
+/* Клавиша слота */
+.slot-key {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    font-size: 10px;
+    color: #fff;
+    font-family: monospace;
+    font-weight: bold;
+    text-shadow: 1px 1px 0 #000;
+    pointer-events: none;
+    z-index: 5;
+}
+
+/* Счётчик стака */
+.slot-count {
+    position: absolute;
+    bottom: 2px;
+    right: 4px;
+    font-size: 12px;
+    color: #fff;
+    font-weight: bold;
+    font-family: monospace;
+    text-shadow: 1px 1px 0 #000;
+    pointer-events: none;
+    z-index: 5;
+}
+
+/* ---------- INVENTORY ---------- */
+#inventory {
+    position: fixed;
+    inset: 0;
+    background: transparent;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+#inventory.open {
+    display: flex;
+}
+
+/* ✅ Стиль инвентаря по референсу Rust — серая полупрозрачная панель */
+.inventory-panel {
+    background: rgba(25, 25, 25, 0.92);
+    border: 2px solid rgba(80, 80, 80, 0.8);
+    border-radius: 4px;
+    padding: 24px;
+    color: #fff;
+    font-family: Arial, sans-serif;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+}
+
+.inventory-title {
+    font-size: 18px;
+    margin-bottom: 14px;
+    text-align: center;
+    color: #ccc;
+    font-weight: bold;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(80, 80, 80, 0.5);
+    padding-bottom: 8px;
+}
+
+/* ✅ Сетка инвентаря — 6 колонок, слоты 56x56 (как референс) */
+.inventory-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 56px);
+    gap: 4px;
+}
+
+.hotbar-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 56px);
+    gap: 4px;
+}
+
+/* ✅ Слоты в инвентаре — 56x56 (больше чем хотбар 48x48) */
+.inventory-grid .slot,
+.hotbar-grid .slot {
+    width: 56px;
+    height: 56px;
+}
+
+.inventory-hint {
+    margin-top: 18px;
+    text-align: center;
+    font-size: 12px;
+    color: #888;
+    border-top: 1px solid rgba(80, 80, 80, 0.3);
+    padding-top: 12px;
+}
+
+.inventory-hint kbd {
+    background: rgba(50, 50, 50, 0.9);
+    border: 1px solid rgba(100, 100, 100, 0.5);
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-family: monospace;
+    color: #ddd;
+}
+
+/* ✅ Старые классы — скрыты */
+.hotbar-slot, .inv-slot, .hotbar-slot-inner,
+.slot-icon-emoji, .slot-icon-img, .slot-name, .slot-label,
+.slot-icon-bg, .slot-icon, .slot-emoji {
+    /* оставляем пустыми — не переопределяем */
+}

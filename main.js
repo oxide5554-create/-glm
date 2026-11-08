@@ -91,40 +91,14 @@ function updateDistanceCulling() {
 window.__registerCull = registerCull;
 
 // ============================================================================
-// РЕНДЕРЕР
-// ✅ Уменьшена нагрузка + мягкая обработка context loss
+// РЕНДЕРЕР — простой, как было изначально (без заглушек!)
 // ============================================================================
-let renderer;
-try {
-    renderer = new THREE.WebGLRenderer({
-        antialias: false,
-        powerPreference: 'default',
-        failIfMajorPerformanceCaveat: false,
-        preserveDrawingBuffer: false,
-    });
-} catch (err) {
-    console.error('[WebGL] Не удалось создать renderer:', err);
-    // ✅ Показываем сообщение + кнопку перезагрузки (НЕ выбрасываем ошибку)
-    document.body.innerHTML = '<div style="position:fixed;inset:0;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;text-align:center;padding:20px;flex-direction:column;gap:20px">' +
-        '<h1 style="color:#ff5a4d">⚠️ WebGL заблокирован</h1>' +
-        '<p style="font-size:18px;max-width:500px">Браузер заблокировал WebGL.</p>' +
-        '<p style="font-size:16px;max-width:500px;color:#aaa">Закрой все вкладки с игрой, подожди 10 секунд,<br>открой новую вкладку и зайди на localhost:8080</p>' +
-        '<button onclick="location.reload()" style="padding:12px 32px;font-size:18px;background:#4a8aff;color:#fff;border:0;border-radius:6px;cursor:pointer">Попробовать снова</button>' +
-        '</div>';
-    // ✅ НЕ выбрасываем ошибку — просто останавливаем выполнение
-    window.__webglBlocked = true;
-}
-// ✅ Если WebGL заблокирован — останавливаем выполнение скрипта
-if (window.__webglBlocked) {
-    // Заглушка renderer чтобы код не падал
-    renderer = { domElement: document.createElement('div'), setSize: ()=>{}, setPixelRatio: ()=>{}, info: {autoReset:false, render:{}}, shadowMap: {}, toneMapping: 0, toneMappingExposure: 1, outputColorSpace: 0, localClippingEnabled: false };
-}
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
-// ✅ pixelRatio = 1.0 (не ниже — иначе пиксели). FXAA сгладит края.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.0));
 renderer.info.autoReset = false;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;  // ✅ обратно PCFSoft (красивее)
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.shadowMap.normalBias = 0.003;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
@@ -132,24 +106,6 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.localClippingEnabled = false;
 window.__renderer = renderer;
 document.body.appendChild(renderer.domElement);
-
-// ✅ Обработка WebGL context loss — авто-перезагрузка через 2 сек
-renderer.domElement.addEventListener('webglcontextlost', (e) => {
-    e.preventDefault();
-    console.warn('[WebGL] Context lost — перезагрузка через 2 сек...');
-    // ✅ Показываем overlay
-    const lostDiv = document.createElement('div');
-    lostDiv.id = 'webgl-lost';
-    lostDiv.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;font-size:24px;z-index:99999;flex-direction:column;gap:20px';
-    lostDiv.innerHTML = '<div>⚠️ WebGL context lost</div><div style="font-size:18px;color:#aaa">Перезагрузка через 2 секунды...</div>';
-    document.body.appendChild(lostDiv);
-    setTimeout(() => location.reload(), 2000);
-}, false);
-renderer.domElement.addEventListener('webglcontextrestored', () => {
-    console.log('[WebGL] Context восстановлен');
-    const lostDiv = document.getElementById('webgl-lost');
-    if (lostDiv) lostDiv.remove();
-}, false);
 
 // ============================================================================
 // ОСВЕЩЕНИЕ
@@ -934,9 +890,18 @@ const player = new PlayerController(controls, camera, ground);
 player.colliders = colliders;
 let settingsUI = null;
 
-const overlay = document.getElementById('overlay');
+// ✅ Если overlay не существует — создаём его (чтобы не падать на null)
+let overlay = document.getElementById('overlay');
+if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:pointer;z-index:10;';
+    overlay.innerHTML = '<h1 style="font-size:48px;margin:0 0 10px;letter-spacing:0.1em;">RUST</h1>' +
+        '<p style="margin:4px 0;opacity:0.8;">Однопользовательская сборка</p>' +
+        '<p style="margin-top:18px;font-size:18px;">Кликни чтобы начать</p>';
+    document.body.appendChild(overlay);
+}
 overlay.addEventListener('click', () => {
-    // ✅ Синглплеер: просто блокируем указатель — никакого нет-коннекта
     try { controls.lock(); } catch (e) {}
 });
 controls.addEventListener('lock', () => {

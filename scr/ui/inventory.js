@@ -105,6 +105,13 @@ export class Inventory {
     if (this.isOpen) {
       this.render();
       if (document.pointerLockElement) document.exitPointerLock();
+      // ✅ Скрываем хотбар пока открыт инвентарь (чтобы не путаться)
+      const hb = document.getElementById('hotbar');
+      if (hb) hb.style.display = 'none';
+    } else {
+      // ✅ Показываем хотбар обратно
+      const hb = document.getElementById('hotbar');
+      if (hb) hb.style.display = '';
     }
   }
 

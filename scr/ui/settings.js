@@ -370,19 +370,27 @@ function buildDOM() {
 
     root = el('div', null); root.id = 'rcs-root';
     const panel = el('div', 'rcs-panel');
+    // ✅ SVG иконки (заменяют эмодзи в шапке и вкладках)
+    const SVG = {
+      gear: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+      gfx: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><circle cx="8" cy="9" r="1.5" fill="currentColor"/><circle cx="15" cy="11" r="1.5" fill="currentColor"/></svg>`,
+      ctl: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="6"/><line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/><circle cx="15" cy="11" r="1" fill="currentColor"/><circle cx="18" cy="13" r="1" fill="currentColor"/></svg>`,
+      net: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 L2 7 L12 12 L22 7 Z"/><path d="M2 17 L12 22 L22 17"/><path d="M2 12 L12 17 L22 12"/></svg>`,
+      close: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>`,
+    };
     panel.innerHTML = `
       <div class="rcs-head">
-        <div class="rcs-logo">⚙</div>
+        <div class="rcs-logo">${SVG.gear}</div>
         <div>
           <div class="rcs-title">НАСТРОЙКИ</div>
           <div class="rcs-sub">RustClone MP • всё применяется сразу и сохраняется</div>
         </div>
-        <button class="rcs-close" title="Закрыть (F2)">✕</button>
+        <button class="rcs-close" title="Закрыть (F2)">${SVG.close}</button>
       </div>
       <div class="rcs-tabs">
-        <button class="rcs-tab active" data-tab="gfx">🖼 ГРАФИКА</button>
-        <button class="rcs-tab" data-tab="ctl">🎮 УПРАВЛЕНИЕ</button>
-        <button class="rcs-tab" data-tab="net">📡 СЕТЬ</button>
+        <button class="rcs-tab active" data-tab="gfx">${SVG.gfx} ГРАФИКА</button>
+        <button class="rcs-tab" data-tab="ctl">${SVG.ctl} УПРАВЛЕНИЕ</button>
+        <button class="rcs-tab" data-tab="net">${SVG.net} СЕТЬ</button>
       </div>`;
     bodyEl = el('div', 'rcs-body');
     panel.appendChild(bodyEl);
@@ -509,9 +517,9 @@ function buildGfxPane(p) {
     const sec3 = el('div', 'rcs-sec', 'ПРОРИСОВКА'); p.appendChild(sec3);
     rowSlider(p, '🗺 Зона прорисовки объектов',
         'Как далеко видно объекты (деревья, машины, постройки). Меньше зона — выше FPS, дальше — красивее обзор. 100 = стандарт игры',
-        10, 150, 1, () => S.zone,
+        25, 150, 1, () => S.zone,
         (v, final) => { S.zone = v; if (final) { saveState(); applyZone(); } else applyZone(); },
-        ['10', '50', '100', '150']);
+        ['25', '50', '100', '150']);
 
     // 5. Стиль неба
     const sec4 = el('div', 'rcs-sec', 'СТИЛЬ НЕБА'); p.appendChild(sec4);
@@ -519,14 +527,19 @@ function buildGfxPane(p) {
         { id: 'square', name: 'КВАДРАТНЫЕ ОБЛАКА', desc: 'Лёгкие блочные облака, минимум нагрузки', art: 'art-sky-base art-square' },
         { id: 'none',   name: 'БЕЗ ОБЛАКОВ', desc: 'Чистое небо, максимальный FPS', art: 'art-sky-base art-none' },
         { id: 'gpu',    name: 'ОБЛАКА ОТ ВИДЕОКАРТЫ', desc: 'Объёмные облака на GPU — смотря какая видеокарта', art: 'art-sky-base art-gpu' },
-    ], () => S.sky, (v) => { S.sky = v; saveState(); applySky(); showToastSafe('☁️ Небо: ' + (v === 'gpu' ? 'объёмные облака' : v === 'square' ? 'квадратные облака' : 'без облаков')); }).syncCards;
+    ], () => S.sky, (v) => { S.sky = v; saveState(); applySky(); showToastSafe('Небо: ' + (v === 'gpu' ? 'объёмные облака' : v === 'square' ? 'квадратные облака' : 'без облаков')); }).syncCards;
 }
 
+// ✅ SVG иконки для вкладки управления (заменяют эмодзи)
+const CTL_SVG = {
+  mouse: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px"><rect x="6" y="3" width="12" height="18" rx="6"/><line x1="12" y1="7" x2="12" y2="11"/></svg>`,
+  kb: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="10"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="18" y1="10" x2="18" y2="10"/><line x1="7" y1="14" x2="17" y2="14"/></svg>`,
+};
 // --- ВКЛАДКА: УПРАВЛЕНИЕ ---
 let bindKeyEls = {};
 function buildCtlPane(p) {
     const sec0 = el('div', 'rcs-sec', 'МЫШЬ'); p.appendChild(sec0);
-    rowSlider(p, '🖱 Чувствительность мыши',
+    rowSlider(p, CTL_SVG.mouse + 'Чувствительность мыши',
         'Насколько резко камера реагирует на движение мыши. 55 — стандарт игры',
         10, 100, 1, () => S.sens,
         (v, final) => { S.sens = v; applySens(); if (final) saveState(); },
@@ -590,7 +603,7 @@ function tryBind(actionId, code) {
     }
     S.binds[actionId] = code;
     rebuildBindMaps(); saveState(); refreshBindKeys();
-    showToastSafe(`⌨ ${ACTIONS.find(a => a.id === actionId).name} → ${keyLabel(code)}`);
+    showToastSafe(`${CTL_SVG.kb}${ACTIONS.find(a => a.id === actionId).name} → ${keyLabel(code)}`);
     return true;
 }
 

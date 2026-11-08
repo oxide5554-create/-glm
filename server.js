@@ -23,6 +23,8 @@ const MIME = {
     '.png':  'image/png',
     '.jpg':  'image/jpeg',
     '.jpeg': 'image/jpeg',
+    '.gif':  'image/gif',
+    '.webp': 'image/webp',  // ✅ Добавлено для новых иконок компонентов крафта
     '.ico':  'image/x-icon',
     '.svg':  'image/svg+xml',
     '.wav':  'audio/wav',

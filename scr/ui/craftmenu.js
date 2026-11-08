@@ -1,18 +1,35 @@
 // scr/ui/craftmenu.js
-// ✅ Патч: список рецептов ПУСТОЙ — крафт-меню открывается и работает,
-//    но в нём нет ни одного рецепта.
-//    Когда будете готовы добавить новое оружие/предметы — добавьте их в массив RECIPES.
+// ✅ Список рецептов: крафт АК-47 и берданки (с компонентами из ящиков).
+//    Компоненты: корпус винтовки/берданки, пружина, труба, МВК, металл, скрап.
+//    Формат рецепта:
+// { id, cat, icon, name, cost, time, count, desc }
 
 import { ITEMS } from './hotbar.js';
 
-// ✅ ПУСТОЙ список рецептов. Формат для будущих рецептов:
-// { id: "rock", cat: "tools", icon: "🪨", name: "Каменный инструмент",
-//   cost: { wood: 20, stone: 10 }, time: 1, count: 1, desc: "..." }
-export const RECIPES = [];
+// ✅ РЕЦЕПТЫ
+export const RECIPES = [
+  {
+    id: 'ak47', cat: 'weapons',
+    icon: ITEMS.ak47.icon,
+    name: 'АК-47',
+    desc: 'Автомат Калашникова. Надёжный, мощный, автоогонь. Нужен корпус винтовки, трубы, МВК и пружины.',
+    cost: { rifleBody: 1, pipe: 3, mvc: 15, spring: 2 },
+    time: 30, count: 1,
+  },
+  {
+    id: 'berdana', cat: 'weapons',
+    icon: ITEMS.berdana.icon,
+    name: 'Берданка',
+    desc: 'Старая охотничья винтовка. Одиночные выстрелы, но мощнее АК. Нужен корпус берданки, скрап, трубы и пружина.',
+    cost: { scrap: 25, berdanaBody: 1, pipe: 2, spring: 1 },
+    time: 20, count: 1,
+  },
+];
 
-// Категории (оставлены для будущих рецептов)
+// Категории
 const CATS = [
   { id: "all", icon: "✚", name: "Все" },
+  { id: "weapons", icon: "🔫", name: "Оружие" },
   { id: "tools", icon: "⛏", name: "Инструменты" },
   { id: "construction", icon: "🔨", name: "Строительство" },
   { id: "resources", icon: "🌲", name: "Ресурсы" }

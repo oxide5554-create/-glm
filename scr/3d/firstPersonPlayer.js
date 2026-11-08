@@ -19,8 +19,9 @@
 //    .setWeapon('axe' | 'pickaxe' | 'ak47' | 'berdana' | 'none')
 //    .setFirstPerson(bool), .setVisible(bool)
 //    .triggerSwing(type)          — для топора/кирки ('atk1' | 'atk2')
-//    .triggerShoot()              — для АК/берданки (отдача, дёргается)
+//    .triggerShoot()              — для АК/берданки (мягкая отдача + дрожь рук)
 //    .setRunning(bool)            — для АК/берданки (прижимается к груди при беге)
+//    .setAiming(bool) / ПКМ       — АК: прицеливание (мушка по центру экрана); .adsAmount = 0..1
 //    .update(dt, opts)            — обновление позы (без рендера)
 //    .renderOverlay()             — рендер рук поверх (вызывается ИЗ main.js)
 // ============================================================================
@@ -66,6 +67,40 @@ const GRIP_BERDANA = Object.assign({}, GRIP_AK, {
     sR: GRIP_AK.sR,
 });
 
+// ✅ ЛЕВАЯ РУКА НА ЦЕВЬЕ АК-47 (хват «C-grip»: ладонь снизу, большой палец слева вдоль цевья,
+//    четыре пальца обхватывают цевьё справа). Рука привязана к САМОМУ автомату,
+//    поэтому не уезжает и не проходит сквозь него при покачивании/беге/отдаче.
+//    Координаты — в единицах модели ak47.glb (ось ствола: меньше = ближе к дульному срезу;
+//    низ цевья z=0, верх z=0.8).
+const GRIP_AK_LEFT = {
+    enabled:    true,   // false → вернуть старую позу левой руки
+    yPref:     -1.85,   // где держим цевьё (ближе к дулу)
+    yRear:     -1.30,   // самая задняя точка (перед магазином), если рука не достаёт
+    zCenter:    0.40,   // высота оси цевья
+    fingerAng:  50,     // угол пальцев от ствола вправо: 0 = вдоль ствола, 90 = поперёк
+    palmTilt:   0.30,   // наклон ладони вправо (к цевью)
+    palmThick:  0.20,   // зазор ладонь↔цевьё (доли длины ладони) — больше = рука дальше от цевья
+    palmFrac:   0.50,   // центр ладони от запястья (доля длины ладони)
+    curl:       0.55,   // сжатие пальцев (больше = сильнее обхват)
+    thumb:      0.25,   // большой палец
+    twistShare: 0.5,    // какая часть скручивания уходит на предплечье (убирает «выкрученное» запястье)
+};
+
+// ✅ ПРИЦЕЛИВАНИЕ АК-47 (ПКМ). Линия прицела = целик → кончик мушки (координаты модели ak47.glb).
+//    Автомат ставится так, чтобы мушка была ровно под прицелом (по центру экрана).
+//    ✅ Подстройка: мушка чуть выше и лево — чтобы попасть под прицел.
+const ADS_AK = {
+    rear:  { y: -1.80, z: 1.10 },   // целик
+    front: { y: -4.40, z: 1.12 },   // мушка (z=1.12 — чуть выше, под прицелом)
+    dist:  0.85,     // камера далеко от калаша (не внутри!)
+    fov:   55,       // FOV 55 — уже, автомат мельче
+    worldFov: 0.82,  // множитель FOV основной камеры при прицеливании
+    speed: 11,       // скорость входа/выхода из прицела
+};
+// Камера рук (должна совпадать с renderOverlay)
+const HANDS_CAM_POS    = new THREE.Vector3(0, 1.7, 0);
+const HANDS_CAM_TARGET = new THREE.Vector3(0, 1.0, 5);
+
 // Клипы поз (общие)
 const IDLE = {
     hy: 0, sx: 2, sy: 0, hx: 0,
@@ -81,40 +116,67 @@ const FIDLE_AXE = Object.assign({}, IDLE, {
     lx: -0.1, ly: -0.05, lz: 0.72, lcurl: 0.3,
 });
 
+// ✅ Доп. параметры позы АК (по умолчанию 0 — ничего не меняют):
+//    gw / gyaw / gpitch / groll — ЯВНАЯ ориентация автомата относительно камеры
+//                                 (gw=0 → старая формула rphi/ryaw; gyaw: + вправо, gpitch: + дуло вверх, groll: + по часовой)
+//    ppitch / pyaw / proll      — маленькие добавочные повороты (отдача, дрожь), градусы
+//    ox / oy / oz               — маленькие смещения автомата в камере (метры): вправо / вверх / вперёд
+//    ljx / ljy / ljz            — дрожь левой кисти (метры)
+//    ads                        — 0..1 прицеливание (линия прицела → на ось камеры)
+const AK_EXTRA = {
+    gw: 0, gyaw: 0, gpitch: 0, groll: 0,
+    ppitch: 0, pyaw: 0, proll: 0,
+    ox: 0, oy: 0, oz: 0,
+    ljx: 0, ljy: 0, ljz: 0,
+    ads: 0,
+};
+
 // ✅ Поза idle с АК-47 — ПО РЕФЕРЕНСУ PUBG (аккуратно смотрел на твою фотку)
 //    Правая рука — на пистолетной рукояти у приклада (низко, справа, у спуска)
-//    Левая рука — вытянута ВПЕРЁД, на цевье ПОД стволом, ВЫШЕ магазина
-//    Ствол — горизонтально вперёд, чуть вверх (~10°)
-//    Левая кисть — ЛАДОНЬЮ ВВЕРХ (обхватывает цевьё снизу, пальцы смотрят вверх)
-const FIDLE_AK = {
+//    Левая рука — на цевье (привязана к автомату, см. GRIP_AK_LEFT)
+const FIDLE_AK = Object.assign({}, AK_EXTRA, {
     hy: 0, sx: 0, sy: 0, hx: 0,
     ltx: 0, ltk: 0, rtx: 0, rtk: 0,
     // Правая рука — на пистолете, низко, правее (как на референсе)
     rx: 0.230, ry: 0.290, rz: 0.500,
     rphi: 0.0, ryaw: 5, roll: 90,
     curl: 0.500, thumb: 0.280,           // правая сжимает рукоять
-    // Левая рука — вытянута ВПЕРЁД к цевью, ВЫШЕ магазина, ЛАДОНЬЮ ВВЕРХ
+    // (lx/ly/lz/lpalm — старая поза левой руки, нужна только берданке)
     lx: 0.450, ly: 0.300, lz: 0.950,
-    lcurl: 0.450,                        // пальцы обхватывают цевьё
-    lpalm: 1,                            // ← ЛАДОНЬ ВВЕРХ (пальцы вверх, обхватывает цевьё снизу)
-};
+    lcurl: 0.450,
+    lpalm: 1,
+});
 
-// Поза БЕГ с АК-47 (прижат к груди)
-const F_RUN_AK = Object.assign({}, IDLE, {
+// ✅ БЕГ с АК-47: автомат прижат к груди по диагонали — приклад у правого плеча,
+//    дуло вверх и влево (раньше rphi=60 заваливал ствол ВНИЗ). Левая рука держит цевьё сама.
+//    gpitch: подъём дула (°), gyaw: − влево (°), rx/ry/rz: где правая кисть относительно плеча.
+const F_RUN_AK = Object.assign({}, FIDLE_AK, {
+    rx: -0.12, ry: -0.04, rz: 0.38,
+    gw: 1, gyaw: -22, gpitch: 38, groll: 0,
+    curl: 0.85, thumb: 0.60,
+    sx: 3, sy: -4,
+});
+
+// Старые позы бега/выстрела — их использует БЕРДАНКА (без изменений)
+const F_RUN_BERDANA = Object.assign({}, IDLE, {
     sx: 0, hx: 0,
     rx: 0.10, ry: 0.05, rz: 0.85, rphi: 60, ryaw: 0, roll: 90, curl: 1.0, thumb: 0.9,
     lx: 0.05, ly: -0.10, lz: 0.55, lcurl: 0.9,
     ltx: 25, ltk: 35, rtx: -25, rtk: -35,
     sy: -8, sx: 4,
 });
-
-// Поза ВЫСТРЕЛ (отдача)
-const F_SHOOT_AK = Object.assign({}, IDLE, {
+const F_SHOOT_BERDANA = Object.assign({}, IDLE, {
     sx: 0, hx: 0,
     rx: 0.35, ry: 0.10, rz: 0.55, rphi: 95, ryaw: 0, roll: 90, curl: 1.0, thumb: 0.9,
     lx: 0.45, ly: 0.30, lz: 0.90, lcurl: 0.5,
-    lpalm: 1,    // ← ладонь вверх (как в idle)
+    lpalm: 1,
 });
+
+function lerpP(a, b, t) {
+    const o = {};
+    for (const k in a) o[k] = (typeof a[k] === 'number' && typeof b[k] === 'number') ? a[k] + (b[k] - a[k]) * t : a[k];
+    return o;
+}
 
 const mk = (base) => (t, p, e) => ({ t, p: Object.assign({}, base, p), e });
 const k1Axe = mk(FIDLE_AXE);
@@ -196,6 +258,16 @@ export class FirstPersonPlayer {
         this.isRunning = false;
         this._shootKick = 0;
         this._shootKickDur = 0.2;   // ✅ было 0.12 — слишком резко, теперь плавнее
+
+        // ✅ АК: плавные состояния, отдача-пружина, дрожь, прицеливание
+        this._aimHeld = false;      // ПКМ зажата
+        this._ads = 0;              // 0..1 — насколько прицелились
+        this._runW = 0;             // 0..1 — насколько в беговой позе
+        this._rec = 0; this._recV = 0;   // пружина отдачи
+        this._shake = 0;            // энергия дрожи рук/автомата
+        this._recSide = 0;
+        this._baseFov = null;
+        this._initAimInput();
 
         this._load();
     }
@@ -314,6 +386,15 @@ export class FirstPersonPlayer {
 
         /* ТОПОР */
         const axeProto = ag.scene;
+        // ✅ Уменьшаем топор — был слишком большой. Целевая длина 0.55м.
+        const axeBox = new THREE.Box3().setFromObject(axeProto);
+        const axeSize = axeBox.getSize(new THREE.Vector3());
+        const axeLen = Math.max(axeSize.x, axeSize.y, axeSize.z);
+        const AXE_TARGET_LEN = 0.55;
+        if (axeLen > 0.001) {
+            axeProto.scale.multiplyScalar(AXE_TARGET_LEN / axeLen);
+            axeProto.updateMatrixWorld(true);
+        }
         const walkAxe = (o) => {
             if (!o) return;
             if (o.isMesh) {
@@ -423,8 +504,9 @@ export class FirstPersonPlayer {
         this.berdanaHolder.add(this.berdana);
         B.RightHand.add(this.berdanaHolder);
         this.berdanaHolder.visible = false;
-        // ✅ Берданка опущена ниже к руке (была высоко)
-        this.berdanaHolder.position.set(0, -0.1, 0);
+        // ✅ Берданка опущена ниже к руке (была высоко).
+        //    Опускаем ещё ниже (с -0.1 до -0.3) + чуть вперёд, чтобы приклад был у плеча.
+        this.berdanaHolder.position.set(0, -0.3, 0.05);
         this.berdanaHolder.rotation.set(0, 0, 0);
 
         this._poseHelpers();
@@ -571,6 +653,95 @@ export class FirstPersonPlayer {
             this.berdana.rotation.set(0, Math.PI / 2, 0);
         };
 
+        // ✅ Рамка камеры рук (в мировых координатах handsScene): вперёд / вверх / вправо на экране
+        {
+            const cf = HANDS_CAM_TARGET.clone().sub(HANDS_CAM_POS).normalize();
+            const cr = new THREE.Vector3().crossVectors(cf, new THREE.Vector3(0, 1, 0)).normalize();
+            const cu = new THREE.Vector3().crossVectors(cr, cf).normalize();
+            this.camFrame = { pos: HANDS_CAM_POS.clone(), f: cf, u: cu, r: cr };
+        }
+        // Явная ориентация ствола в камере: yaw (+вправо), pitch (+дуло вверх), roll (+по часовой), градусы
+        this.gunFrame = (yaw, pitch, roll) => {
+            const c = this.camFrame;
+            const q = new THREE.Quaternion().setFromAxisAngle(c.u, -yaw * D)
+                .multiply(new THREE.Quaternion().setFromAxisAngle(c.r, pitch * D));
+            const f = c.f.clone().applyQuaternion(q), u = c.u.clone().applyQuaternion(q);
+            u.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(f, roll * D));
+            return { f, a: u };
+        };
+        // Маленький добавочный поворот вокруг осей камеры (отдача, дрожь)
+        this.gunDelta = (yaw, pitch, roll) => {
+            const c = this.camFrame;
+            return new THREE.Quaternion().setFromAxisAngle(c.u, -yaw * D)
+                .multiply(new THREE.Quaternion().setFromAxisAngle(c.r, pitch * D))
+                .multiply(new THREE.Quaternion().setFromAxisAngle(c.f, roll * D));
+        };
+
+        // ✅ Левая рука на цевье АК — считается от РЕАЛЬНОГО положения автомата в мире.
+        //    Оси АК (в локальных координатах this.ak): ствол/дуло = +Z, верх = +Y.
+        //    Точка модели (x, y, z) → локальная (x, z, -y)  (из-за Sketchfab-поворота в glb).
+        this.poseLeftHandAK = (LL, SL, pole, jit) => {
+            const B = this.bones, G = GRIP_AK_LEFT, H = this.HF.Left;
+            const akW = this.ak.matrixWorld;
+            const fwd   = new THREE.Vector3(0, 0, 1).transformDirection(akW);   // куда смотрит дуло
+            const up    = new THREE.Vector3(0, 1, 0).transformDirection(akW);   // верх автомата
+            const right = new THREE.Vector3().crossVectors(fwd, up).normalize(); // правый бок автомата
+            const unit  = new THREE.Vector3().setFromMatrixScale(akW).x;        // метров на 1 ед. модели
+
+            const palmLenW = wp(B.LeftHand).distanceTo(wp(B.LeftHandMiddle1));
+
+            // Куда должна смотреть ладонь (вверх и чуть вправо — к цевью) и куда — пальцы
+            const pd = up.clone().addScaledVector(right, G.palmTilt).normalize();
+            const fa = G.fingerAng * D;
+            const f2 = fwd.clone().multiplyScalar(Math.cos(fa)).addScaledVector(right, Math.sin(fa));
+            f2.addScaledVector(pd, -f2.dot(pd)).normalize();
+            // c2 — «нормаль» кисти в базисе orientHand; знак учитывает, в какую сторону у модели гнутся пальцы
+            const c2 = pd.clone().multiplyScalar(-this.SG.Left.curl);
+            const a2 = new THREE.Vector3().crossVectors(c2, f2).normalize();
+
+            // Расстояние от центра ладони до оси цевья (полувысота цевья + толщина кисти)
+            const halfExt = (Math.abs(pd.dot(up)) * 0.40 + Math.abs(pd.dot(right)) * 0.19) * unit;
+            const dist = halfExt + G.palmThick * palmLenW;
+
+            // Ищем самую передовую точку цевья, до которой рука достаёт
+            const reachMax = LL * 0.985;
+            let W = null, bestW = null, bestD = Infinity;
+            for (let yy = G.yPref; yy <= G.yRear + 1e-6; yy += 0.05) {
+                const gc = this.ak.localToWorld(new THREE.Vector3(0, G.zCenter, -yy));
+                const w = gc.addScaledVector(pd, -dist).addScaledVector(f2, -G.palmFrac * palmLenW);
+                const d = w.distanceTo(SL);
+                if (d < bestD) { bestD = d; bestW = w; }
+                if (d <= reachMax) { W = w; break; }
+            }
+            if (!W) {
+                W = bestW;
+                if (!this._akReachWarned) {
+                    this._akReachWarned = true;
+                    console.warn('[FP] АК: левая рука не достаёт до цевья на ' +
+                        ((bestD - reachMax) * 100).toFixed(1) + ' см (ближайшая точка). ' +
+                        'Подвинь АК ближе к телу (GRIP_AK / FIDLE_AK.rz) или уменьши GRIP_AK_LEFT.yRear.');
+                }
+            }
+
+            if (jit) W.add(jit);   // дрожь левой кисти при стрельбе
+            this.ik(B.LeftArm, B.LeftForeArm, B.LeftHand, W, pole);
+
+            // Часть разворота ладони отдаём предплечью, чтобы запястье не «закручивалось»
+            const e = wp(B.LeftHand).sub(wp(B.LeftForeArm)).normalize();
+            const R = B.LeftHand.getWorldQuaternion(new THREE.Quaternion()).multiply(H.wq.clone().invert());
+            const aCur = H.a.clone().applyQuaternion(R);
+            aCur.addScaledVector(e, -aCur.dot(e));
+            const aTgt = a2.clone().addScaledVector(e, -a2.dot(e));
+            if (aCur.lengthSq() > 1e-6 && aTgt.lengthSq() > 1e-6) {
+                aCur.normalize(); aTgt.normalize();
+                const ang = Math.atan2(e.dot(new THREE.Vector3().crossVectors(aCur, aTgt)), aCur.dot(aTgt));
+                this.rotW(B.LeftForeArm, e, ang * G.twistShare);
+            }
+
+            this.orientHand('Left', f2, a2);
+            this.fingers('Left', G.curl, G.thumb);
+        };
+
         this.pose = (p, fp) => {
             const B = this.bones, rest = this.rest;
             const UP = this.UP, RT = this.RT, FW = this.FW, LF = this.LF;
@@ -602,9 +773,14 @@ export class FirstPersonPlayer {
             const tgt = (S, L, x, y, z) => S.clone().addScaledVector(Rt, x * L).addScaledVector(Ut, y * L).addScaledVector(Ft, z * L);
 
             const LR = this.reach('Right'), SR = wp(B.RightArm);
+            const rightPole = Ut.clone().multiplyScalar(-1).addScaledVector(Rt, 0.5).addScaledVector(Ft, -0.3);
+            const cam = this.camFrame;
+            // маленькие смещения автомата (отдача/дрожь) в осях камеры, метры
+            const off = new THREE.Vector3()
+                .addScaledVector(cam.r, p.ox || 0).addScaledVector(cam.u, p.oy || 0).addScaledVector(cam.f, p.oz || 0);
             this.ik(B.RightArm, B.RightForeArm, B.RightHand,
-                tgt(SR, LR, p.rx, p.ry, p.rz),
-                Ut.clone().multiplyScalar(-1).addScaledVector(Rt, 0.5).addScaledVector(Ft, -0.3));
+                tgt(SR, LR, p.rx, p.ry, p.rz).add(off),
+                rightPole);
             const ph = p.rphi * D;
             let a2 = Ut.clone().multiplyScalar(Math.cos(ph)).addScaledVector(Ft, Math.sin(ph)).applyAxisAngle(Ut, p.ryaw * D).normalize();
             const fd = wp(B.RightHand).clone().sub(wp(B.RightForeArm)).normalize();
@@ -614,13 +790,68 @@ export class FirstPersonPlayer {
             if (gg.dot(pr) < 0) gg.negate();
             const w = Math.min(1, Math.max(0, (ln - 0.35) / 0.35));
             const f2 = pr.multiplyScalar(w).addScaledVector(gg, 1 - w).normalize();
-            this.orientHand('Right', f2, a2);
+
+            // ✅ Ориентация автомата: обычная формула → (бег) явная рамка → (ПКМ) линия прицела на ось камеры → дрожь
+            const adsK = (this.currentWeapon === 'ak47') ? (p.ads || 0) : 0;
+            let fF = f2.clone(), aF = a2.clone();
+            if ((p.gw || 0) > 0.001) {
+                const ge = this.gunFrame(p.gyaw, p.gpitch, p.groll);
+                fF.lerp(ge.f, p.gw).normalize();
+                aF.lerp(ge.a, p.gw); aF.addScaledVector(fF, -aF.dot(fF)).normalize();
+            }
+            const ADS = ADS_AK;
+            const akAnchor = () => this.ak.localToWorld(new THREE.Vector3(0, ADS.rear.z, -ADS.rear.y)); // целик
+            let Pn = null;
+            if (adsK > 0.001) {
+                // где целик был бы БЕЗ прицеливания (чтобы плавно перейти)
+                this.orientHand('Right', fF, aF);
+                this.model.updateMatrixWorld(true);
+                this.placeAK();
+                this.model.updateMatrixWorld(true);
+                Pn = akAnchor();
+                // ориентация, при которой линия целик→мушка параллельна оси камеры
+                const gam = Math.atan2(ADS.front.z - ADS.rear.z, ADS.rear.y - ADS.front.y);
+                const fA = cam.f.clone().multiplyScalar(Math.cos(gam)).addScaledVector(cam.u, -Math.sin(gam)).normalize();
+                const aA = cam.u.clone().multiplyScalar(Math.cos(gam)).addScaledVector(cam.f, Math.sin(gam)).normalize();
+                fF.lerp(fA, adsK).normalize();
+                aF.lerp(aA, adsK); aF.addScaledVector(fF, -aF.dot(fF)).normalize();
+            }
+            if (p.ppitch || p.pyaw || p.proll) {
+                const qd = this.gunDelta(p.pyaw || 0, p.ppitch || 0, p.proll || 0);
+                fF.applyQuaternion(qd); aF.applyQuaternion(qd);
+            }
+            this.orientHand('Right', fF, aF);
+            if (adsK > 0.001) {
+                // двигаем кисть так, чтобы целик лёг на ось камеры (в пределах досягаемости руки)
+                this.model.updateMatrixWorld(true);
+                this.placeAK();
+                this.model.updateMatrixWorld(true);
+                const Pa = cam.pos.clone().addScaledVector(cam.f, ADS.dist).add(off);
+                const Pt = Pn.clone().lerp(Pa, adsK);
+                const Wr = wp(B.RightHand).add(Pt.sub(akAnchor()));
+                this.ik(B.RightArm, B.RightForeArm, B.RightHand, Wr, rightPole);
+                this.orientHand('Right', fF, aF);
+            }
             this.fingers('Right', p.curl, p.thumb);
 
             const LL = this.reach('Left'), SL = wp(B.LeftArm);
+            const leftPole = Ut.clone().multiplyScalar(-1).addScaledVector(Rt, -0.5).addScaledVector(Ft, -0.3);
+
+            // ✅ АК-47: сначала ставим автомат (он держится на правой руке), потом ведём левую руку к цевью
+            if (this.currentWeapon === 'ak47' && GRIP_AK_LEFT.enabled) {
+                this.model.updateMatrixWorld(true);
+                this.placeAK();
+                this.model.updateMatrixWorld(true);
+                const jit = new THREE.Vector3()
+                    .addScaledVector(Rt, p.ljx || 0).addScaledVector(Ut, p.ljy || 0).addScaledVector(Ft, p.ljz || 0);
+                this.poseLeftHandAK(LL, SL, leftPole, jit);
+                this.model.updateMatrixWorld(true);
+                return;
+            }
+
             this.ik(B.LeftArm, B.LeftForeArm, B.LeftHand,
                 tgt(SL, LL, p.lx, p.ly, p.lz),
-                Ut.clone().multiplyScalar(-1).addScaledVector(Rt, -0.5).addScaledVector(Ft, -0.3));
+                leftPole);
             const fl = wp(B.LeftHand).clone().sub(wp(B.LeftForeArm)).normalize();
             // ✅ Ориентация левой кисти:
             //    lpalm = 0 (по умолчанию) → ладонь вниз (как для топора)
@@ -662,6 +893,113 @@ export class FirstPersonPlayer {
         this._pendingWeapon = type;
         this._swingType = null;
         this._shootKick = 0;
+        this._resetAim();
+    }
+
+    // ===== ✅ ПРИЦЕЛИВАНИЕ (ПКМ) =====
+    //    БАГ FIX: раньше onCanvas проверял e.target.tagName === 'CANVAS',
+    //    но при Pointer Lock события идут на document.body, не на canvas.
+    //    Теперь проверяем pointer lock (или что игра активна).
+    _initAimInput() {
+        // ✅ Игра активна если: pointer lock включён ИЛИ курсор на canvas
+        const gameActive = () => {
+            if (document.pointerLockElement) return true;  // pointer lock = играем
+            const t = document.activeElement;
+            if (t && t.tagName === 'CANVAS') return true;
+            // ✅ Если курсор на body — тоже разрешаем (при overlay)
+            return true;  // проще всегда разрешать — ПКМ в браузере всё равно блокируется
+        };
+        this._onMouseDown = (e) => {
+            if (e.button === 2 && this.currentWeapon === 'ak47') {
+                this._aimHeld = true;
+            }
+        };
+        this._onMouseUp = (e) => {
+            if (e.button === 2) this._aimHeld = false;
+        };
+        // ✅ Всегда блокируем контекстное меню (чтобы ПКМ не открывал меню браузера)
+        this._onCtx = (e) => { e.preventDefault(); };
+        this._onBlur = () => { this._aimHeld = false; };
+        window.addEventListener('mousedown', this._onMouseDown);
+        window.addEventListener('mouseup', this._onMouseUp);
+        window.addEventListener('contextmenu', this._onCtx);
+        window.addEventListener('blur', this._onBlur);
+    }
+
+    _resetAim() {
+        this._aimHeld = false;
+        this._ads = 0;
+        this._applyWorldFov(0);
+    }
+
+    /** Программное прицеливание (если хочешь управлять не из этого файла) */
+    setAiming(on) { this._aimHeld = !!on; }
+    /** 0..1 — насколько игрок прицелился (для HUD: спрятать точку-прицел, приглушить покачивание камеры и т.п.) */
+    get adsAmount() { return this._ads; }
+
+    _applyWorldFov(k) {
+        if (!this.camera || ADS_AK.worldFov === 1) return;
+        if (k > 0.001) {
+            if (this._baseFov == null) this._baseFov = this.camera.fov;
+            this.camera.fov = this._baseFov * (1 + (ADS_AK.worldFov - 1) * k);
+            this.camera.updateProjectionMatrix();
+        } else if (this._baseFov != null) {
+            this.camera.fov = this._baseFov;
+            this._baseFov = null;
+            this.camera.updateProjectionMatrix();
+        }
+    }
+
+    // ===== ✅ ПОЗА АК-47: idle ↔ бег ↔ прицел + мягкая отдача и дрожь =====
+    _akPose(dt) {
+        const A = ADS_AK, t = this._clock;
+        const sm1 = (cur, tgt, rate) => {
+            const n = cur + (tgt - cur) * (1 - Math.exp(-rate * dt));
+            return Math.abs(n - tgt) < 0.002 ? tgt : n;
+        };
+        const wantAds = this._aimHeld && !this.isRunning;
+        this._ads  = sm1(this._ads,  wantAds ? 1 : 0, A.speed);
+        this._runW = sm1(this._runW, this.isRunning ? 1 : 0, 9);
+
+        // Пружина отдачи (лёгкий «пинок» назад и мягкий возврат с чуть заметным отскоком)
+        const h = Math.min(dt, 1 / 30) / 2;
+        for (let i = 0; i < 2; i++) {
+            this._recV += (-420 * this._rec - 26 * this._recV) * h;
+            this._rec  += this._recV * h;
+        }
+        this._rec = Math.max(-0.4, Math.min(1.8, this._rec));
+        this._shake *= Math.exp(-dt * 7);
+
+        const idle = Object.assign({}, FIDLE_AK);
+        idle.sx += Math.sin(t * 1.8) * 0.8;
+        idle.sy += Math.sin(t * 1.5) * 0.5;
+        const run = Object.assign({}, F_RUN_AK);
+        run.sx += Math.sin(t * 8) * 1.2;
+        run.gpitch += Math.sin(t * 8) * 1.2;          // лёгкое покачивание при беге
+        run.gyaw   += Math.cos(t * 4) * 1.0;
+        const p = lerpP(idle, run, this._runW);
+
+        const ads = this._ads;
+        p.ads = ads;
+        p.sx *= (1 - 0.8 * ads); p.sy *= (1 - 0.8 * ads);
+
+        // Дрожь: сумма двух синусов на разных частотах
+        const tr = (f1, f2, ph) => Math.sin(t * f1 + ph) + 0.6 * Math.sin(t * f2 + ph * 1.7);
+        const rec = this._rec, sh = this._shake, damp = 1 - 0.5 * ads;
+        // ✅ Вертикальная отдача по паттерну (recVert: 0.5-1.0)
+        const recVert = this._recVert || 1.0;
+        p.oz = (-0.018 * rec + 0.0025 * sh * tr(23, 37, 2.1)) * damp;
+        p.oy = ( 0.004 * rec + 0.0022 * sh * tr(29, 41, 0.8)) * damp + Math.sin(t * 1.6) * 0.0012 * ads;
+        p.ox = ( 0.0022 * sh * tr(31, 43, 1.7)) * damp;
+        // ✅ ЗИГЗАГ: вертикаль × recVert, боковой × recSide (по паттерну)
+        p.ppitch = (0.55 * recVert * rec + 0.35 * sh * tr(27, 39, 0.3)) * damp;        // + = дуло вверх
+        p.pyaw   = (0.45 * Math.abs(this._recSide || 0) * rec * Math.sign(this._recSide || 1)
+                    + 0.30 * sh * tr(25, 35, 1.1)) * damp;                             // боковой увод
+        p.proll  = (0.40 * sh * tr(21, 33, 2.6) + 0.15 * (this._recSide || 0) * rec) * damp;
+        p.ljx = 0.0035 * sh * tr(33, 47, 0.9);
+        p.ljy = 0.0030 * sh * tr(26, 45, 2.2);
+        p.ljz = 0.0020 * sh * tr(30, 40, 1.4);
+        return p;
     }
 
     _applyVisibility(showArms) {
@@ -714,6 +1052,29 @@ export class FirstPersonPlayer {
         // ✅ Отдача работает и для АК, и для берданки
         if (this.currentWeapon !== 'ak47' && this.currentWeapon !== 'berdana') return;
         this._shootKick = this._shootKickDur;
+        if (this.currentWeapon === 'ak47') {
+            // ✅ ЗИГЗАГ-отдача: каждый выстрел уводит ствол в новую сторону по паттерну
+            //    Паттерн: вверх-вправо-вверх-влево-вверх-вправо... (как реальный АК)
+            this._shotCount = (this._shotCount || 0) + 1;
+            const pattern = [
+                { x:  0.0, y: 1.0 },   // 1: прямо вверх
+                { x:  0.8, y: 0.7 },   // 2: вверх-вправо
+                { x:  0.3, y: 1.0 },   // 3: вверх чуть вправо
+                { x: -0.9, y: 0.6 },   // 4: вверх-влево
+                { x: -0.4, y: 1.0 },   // 5: вверх чуть влево
+                { x:  1.0, y: 0.5 },   // 6: сильно вправо
+                { x:  0.5, y: 0.9 },   // 7: вверх-вправо
+                { x: -0.7, y: 0.8 },   // 8: вверх-влево
+            ];
+            const p = pattern[(this._shotCount - 1) % pattern.length];
+            // ✅ Мягкий «пинок» + дрожь
+            this._recV += 38;
+            // ✅ Маленькая тряска рук (было 0.55, теперь 0.3)
+            this._shake = Math.min(this._shake + 0.3, 1.0);
+            // ✅ Зигзаг: боковой увод по паттерну (x), вертикаль всегда вверх (y)
+            this._recSide = p.x;
+            this._recVert = p.y;  // ✅ множитель вертикальной отдачи
+        }
     }
     setRunning(running) {
         this.isRunning = !!running;
@@ -724,20 +1085,26 @@ export class FirstPersonPlayer {
         this._clock += dt;
 
         let p;
-        if (this.currentWeapon === 'ak47' || this.currentWeapon === 'berdana') {
-            // ✅ Берданка использует те же позы что АК (idle/run/shoot)
+        if (this.currentWeapon === 'ak47') {
+            p = this._akPose(dt);
+            this._applyWorldFov(this._ads);
+        } else if (this.currentWeapon === 'berdana') {
+            // Берданка — прежние позы (idle/run/shoot)
             if (this._shootKick > 0) {
                 const t = 1 - (this._shootKick / this._shootKickDur);
-                const kick = Math.sin(t * Math.PI);
-                p = Object.assign({}, F_SHOOT_AK);
-                // ✅ СОВСЕМ лёгкое дёргание — чуть назад и сразу обратно
-                p.rx += 0.012 * kick;    // минимальный наклон
-                p.rphi += 0.5 * kick;     // минимальный плеч
-                p.lz -= 0.005 * kick;     // минимальный откат левой
+                // ✅ Плавное затухание kick (smoothstep вместо sin — мягче на пике)
+                const kick = t * t * (3 - 2 * t);  // smoothstep: 0→1
+                // ✅ Для берданки — чуть сильнее отдача (она мощнее)
+                const power = (this.currentWeapon === 'berdana') ? 1.6 : 1.0;
+                p = Object.assign({}, F_SHOOT_BERDANA);
+                // ✅ Минимальное дёргание — чуть назад и плавно обратно
+                p.rx += 0.008 * kick * power;    // наклон ствола вверх
+                p.rphi += 0.3 * kick * power;    // плеч
+                p.lz -= 0.003 * kick * power;    // откат левой руки
                 this._shootKick -= dt;
                 if (this._shootKick < 0) this._shootKick = 0;
             } else if (this.isRunning) {
-                p = Object.assign({}, F_RUN_AK);
+                p = Object.assign({}, F_RUN_BERDANA);
                 p.sx += Math.sin(this._clock * 8) * 1.5;
                 p.ltx = 25 + Math.sin(this._clock * 8) * 5;
                 p.ltk = 35 + Math.cos(this._clock * 8) * 5;
@@ -778,7 +1145,7 @@ export class FirstPersonPlayer {
         this.handsCamera.position.set(0, 1.7, 0);
         this.handsCamera.up.set(0, 1, 0);
         this.handsCamera.lookAt(0, 1.0, 5);
-        this.handsCamera.fov = 74;
+        this.handsCamera.fov = 74 + (ADS_AK.fov - 74) * this._ads;
         this.handsCamera.aspect = this.camera.aspect;
         this.handsCamera.near = 0.02;
         this.handsCamera.far = 200;
@@ -793,6 +1160,11 @@ export class FirstPersonPlayer {
     }
 
     dispose() {
+        window.removeEventListener('mousedown', this._onMouseDown);
+        window.removeEventListener('mouseup', this._onMouseUp);
+        window.removeEventListener('contextmenu', this._onCtx);
+        window.removeEventListener('blur', this._onBlur);
+        this._applyWorldFov(0);
         if (this.model) {
             if (this.model.parent) this.model.parent.remove(this.model);
             this.model.traverse((o) => {

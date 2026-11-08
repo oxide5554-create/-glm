@@ -19,13 +19,13 @@ export const ITEMS = {
   cloth:            { id: 'cloth',            name: 'Ткань',               icon: './scr/ui/icons/cloth.png',             emoji: '🧵', stackable: true, stack: 100 },
   animalFat:        { id: 'animalFat',        name: 'Животный жир',        icon: './scr/ui/icons/animal_fat.png',        emoji: '🛢️', stackable: true, stack: 100 },
   // ✅ Компоненты для крафта (падают из ящиков)
-  rifleBody:        { id: 'rifleBody',        name: 'Корпус винтовки',     icon: '',  emoji: '🔫', stackable: true, stack: 10 },
-  berdanaBody:      { id: 'berdanaBody',      name: 'Корпус берданки',     icon: '',  emoji: '🎯', stackable: true, stack: 10 },
-  spring:           { id: 'spring',           name: 'Пружина',             icon: '',  emoji: '🔩', stackable: true, stack: 20 },
-  pipe:             { id: 'pipe',             name: 'Труба',               icon: '',  emoji: '🧱', stackable: true, stack: 20 },
+  rifleBody:        { id: 'rifleBody',        name: 'Корпус винтовки',     icon: './scr/ui/icons/rifle_body.webp',     emoji: '🔫', stackable: true, stack: 10 },
+  berdanaBody:      { id: 'berdanaBody',      name: 'Корпус берданки',     icon: './scr/ui/icons/berdana_body.webp',   emoji: '🎯', stackable: true, stack: 10 },
+  spring:           { id: 'spring',           name: 'Пружина',             icon: './scr/ui/icons/spring.webp',         emoji: '🔩', stackable: true, stack: 20 },
+  pipe:             { id: 'pipe',             name: 'Труба',               icon: './scr/ui/icons/pipe.webp',           emoji: '🧱', stackable: true, stack: 20 },
   // ✅ Ресурсы для крафта
-  metalFragment:    { id: 'metalFragment',    name: 'Металл (фрагмент)',   icon: '',  emoji: '⚙️', stackable: true, stack: 100 },
-  mvc:              { id: 'mvc',              name: 'МВК',                 icon: '',  emoji: '🧱', stackable: true, stack: 100 }
+  metalFragment:    { id: 'metalFragment',    name: 'Металл (фрагмент)',   icon: './scr/ui/icons/metal_fragments.webp', emoji: '⚙️', stackable: true, stack: 100 },
+  mvc:              { id: 'mvc',              name: 'МВК',                 icon: './scr/ui/icons/mvc.webp',            emoji: '🧱', stackable: true, stack: 100 }
 };
 
 // ✅ Рендер иконки — img с INLINE styles, заполняет слот (width:100%)

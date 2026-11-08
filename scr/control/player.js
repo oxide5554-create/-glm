@@ -77,28 +77,47 @@ export class PlayerController {
         });
     }
 
-    // ✅ Проверка коллизии позиции игрока с препятствиями (деревья, камни, бочки)
-    // Использует world position коллайдера — работает даже для вложенных mesh
+    // ✅ Проверка коллизии позиции игрока с препятствиями
+    //    (деревья, камни, бочки, машины, части газовых станций и складов, ящики)
+    //    Использует world position коллайдера + подъём по родителям для поиска флагов.
     _collidesAt(pos) {
         if (!this.colliders || this.colliders.length === 0) return false;
         const playerRadius = 0.35;  // радиус игрока
         const _v = new THREE.Vector3();
         for (const c of this.colliders) {
-            if (!c || !c.userData) continue;
-            // Только препятствия
-            const isObstacle = c.userData.isTree || c.userData.isStone ||
-                               c.userData.isBreakableBarrel;
+            if (!c) continue;
+            // ✅ Собираем флаги с самого объекта и его родителей (глубже — для вложенных групп)
+            let isTree = false, isStone = false, isBarrel = false, isVehicle = false, isCrate = false;
+            let trunkR = 0;
+            let cur = c;
+            let depth = 0;
+            while (cur && depth < 8) {
+                const ud = cur.userData;
+                if (ud) {
+                    if (ud.isTree && !isTree) { isTree = true; trunkR = ud.trunkRadius || 0; }
+                    if (ud.isStone) isStone = true;
+                    if (ud.isBreakableBarrel) isBarrel = true;
+                    if (ud.isVehicle) isVehicle = true;
+                    if (ud.isCrate) isCrate = true;
+                    if (isTree || isStone || isBarrel || isVehicle || isCrate) break;
+                }
+                cur = cur.parent;
+                depth++;
+            }
+            const isObstacle = isTree || isStone || isBarrel || isVehicle || isCrate;
             if (!isObstacle) continue;
             // World position коллайдера
             c.getWorldPosition(_v);
             const dx = pos.x - _v.x;
             const dz = pos.z - _v.z;
             const dist = Math.hypot(dx, dz);
-            // Радиус коллизии
+            // Радиус коллизии (зависит от типа препятствия)
             let radius = 0.8;
-            if (c.userData.isTree) radius = 0.5;
-            else if (c.userData.isStone) radius = 0.8;
-            else if (c.userData.isBreakableBarrel) radius = 0.4;
+            if (isTree) radius = Math.max(0.4, trunkR * 0.8);  // ✅ ствол дерева
+            else if (isStone) radius = 0.7;
+            else if (isBarrel) radius = 0.4;
+            else if (isVehicle) radius = 1.5;
+            else if (isCrate) radius = 0.7;
             if (dist < radius + playerRadius) {
                 return true;
             }

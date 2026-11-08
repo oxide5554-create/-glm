@@ -26,6 +26,8 @@ import { createBuildMenu } from './scr/ui/buildmenu.js';
 import { Inventory } from './scr/ui/inventory.js';
 import { createCraftMenu } from './scr/ui/craftmenu.js';
 import { initSettings } from './scr/ui/settings.js';
+import { openCrateUI, closeCrateUI, isCrateUIOpen } from './scr/ui/crateUI.js';
+import { showCrosshair, updateCrosshair, recoilBoost, getCurrentSpread } from './scr/ui/crosshair.js';
 
 // ✅ Мир: флора, террейн, бочки, постройки, хранилище
 import { generateFlora, updateGrass } from './scr/world/flora.js';
@@ -58,21 +60,27 @@ scene.add(camera);
 
 // ============================================================================
 // DISTANCE CULLING — скрываем далёкие объекты для оптимизации
+//    Скрывает: деревья, кусты, камни, машины, заправки, амбары, чекблоки, бочки.
 // ============================================================================
 const cullItems = [];
 function registerCull(group, maxDist, type = 'generic') {
     if (!group) return;
     group.traverse(o => { if (o.isMesh) o.frustumCulled = true; });
-    cullItems.push({ group, maxDist, type });
+    cullItems.push({ group, maxDist, baseDist: maxDist, type });
 }
 let _cullFrame = 0;
+// ✅ Каждый кадр: обновляем матрицы и проверяем дистанцию.
+//    (раньше через кадр — для статических объектов это не критично,
+//     но для багги/машин позиции меняются, и пропуск кадров вызывал мерцание)
 function updateDistanceCulling() {
-    if ((_cullFrame++ & 1) === 0) return;
+    if ((_cullFrame++ & 3) !== 0) return;  // каждые 4 кадра — для производительности
     const ce = camera.matrixWorld.elements;
     const cx = ce[12], cy = ce[13], cz = ce[14];
     for (const item of cullItems) {
         const g = item.group;
         if (!g.parent) continue;
+        // ✅ Принудительно обновляем мировую матрицу (актуально для перемещённых объектов)
+        if (g.matrixWorldNeedsUpdate) g.updateMatrixWorld();
         const m = g.matrixWorld.elements;
         const dx = m[12] - cx, dy = m[13] - cy, dz = m[14] - cz;
         const lim = item.maxDist;
@@ -127,32 +135,53 @@ const skySystem = createVolumetricSky(scene, sun);
 
 // ============================================================================
 // ЗЕМЛЯ + КАМНИ
+// ✅ Камень: нормальная форма (натуральный валун), один размер, по рельефу.
 // ============================================================================
 const ground = generateTerrain(scene);
 const colliders = [ground];
 ground.userData.isGround = true;
-const stoneGeo = new THREE.DodecahedronGeometry(0.8, 0);
-const stoneMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.9 });
+
+// ✅ Создаём камень-валун: DodecahedronGeometry (как было изначально), но по рельефу
+function createStoneMesh() {
+    const geo = new THREE.DodecahedronGeometry(0.8, 0);
+    const mat = new THREE.MeshStandardMaterial({
+        color: 0x888888,
+        roughness: 0.9,
+        metalness: 0.0,
+        flatShading: true,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    return mesh;
+}
+
 for (let i = 0; i < 50; i++) {
-    const stone = new THREE.Mesh(stoneGeo, stoneMat);
-    stone.position.set((Math.random() - 0.5) * 350, 0.4, (Math.random() - 0.5) * 350);
-    stone.rotation.set(Math.random(), Math.random(), Math.random());
+    const stone = createStoneMesh();
+    const sx = (Math.random() - 0.5) * 350;
+    const sz = (Math.random() - 0.5) * 350;
+    const sy = getGroundHeight(sx, sz);
+    // ✅ Случайный размер (как было изначально)
     stone.scale.setScalar(0.6 + Math.random() * 1.2);
+    // ✅ Позиция по рельефу (не y=0.4)
+    stone.position.set(sx, sy + 0.4, sz);
+    stone.rotation.set(Math.random(), Math.random(), Math.random());
     stone.castShadow = true; stone.receiveShadow = true;
     stone.userData.isStone = true; stone.userData.health = 3; stone.userData.maxHealth = 3;
     stone.userData.id = 'stone_' + i;
     scene.add(stone); colliders.push(stone);
-    registerCull(stone, 90, 'stone');
+    registerCull(stone, 120, 'stone');
 }
 
 // ============================================================================
 // ФЛОРА (деревья, кусты, папоротники, цветы, трава)
+// ✅ Уменьшено количество для оптимизации (30→60 фпс):
+//    деревья 220→120, трава 18000→6000, кусты 180→100, папоротники 1200→400, цветы 2500→800
 // ============================================================================
-const flora = generateFlora(scene, { camera: camera, area: 550, trees: 220, grass: 18000, bushes: 180, ferns: 1200, flowers: 2500 });
+const flora = generateFlora(scene, { camera: camera, area: 550, trees: 120, grass: 6000, bushes: 100, ferns: 400, flowers: 800 });
 flora.trees.traverse(obj => { if (obj.isMesh) colliders.push(obj); });
 flora.bushes.traverse(obj => { if (obj.isMesh) colliders.push(obj); });
-for (const tree of flora.trees.children) registerCull(tree, 160, 'tree');
-for (const bush of flora.bushes.children) registerCull(bush, 110, 'bush');
+// ✅ Culling для деревьев/кустов — скрываются когда далеко (зависит от зоны прорисовки)
+for (const tree of flora.trees.children) registerCull(tree, 180, 'tree');
+for (const bush of flora.bushes.children) registerCull(bush, 120, 'bush');
 
 // ============================================================================
 // ДОРОГА + ДЕКОР
@@ -162,8 +191,41 @@ const decor = generateDecorations(scene);
 colliders.push(...decor.colliders);
 
 // ============================================================================
-// БЛОКПОСТЫ (45 шт.)
+// БЛОКПОСТЫ (45 шт.) — чекблоки (мусорки)
+// ✅ Возле каждого чекблока: куст + деревянный ящик (5% шанс военного)
 // ============================================================================
+const checkBlockPositions = [];  // ✅ Сохраняем позиции для спавна ящиков позже
+
+// ✅ Простая функция создания куста (3-5 зелёных сфер)
+function spawnSimpleBush(x, y, z) {
+    const group = new THREE.Group();
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3a5a28, roughness: 0.95, flatShading: true });
+    const branchMat = new THREE.MeshStandardMaterial({ color: 0x4a3a22, roughness: 0.95 });
+    // ветка-основа
+    const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 0.5, 5), branchMat);
+    branch.position.y = 0.25;
+    group.add(branch);
+    // 4-5 листьев-сфер
+    const nLeaves = 4 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < nLeaves; i++) {
+        const r = 0.28 + Math.random() * 0.18;
+        const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), leafMat);
+        const a = (i / nLeaves) * Math.PI * 2 + Math.random() * 0.5;
+        const d = 0.18 + Math.random() * 0.15;
+        leaf.position.set(Math.cos(a) * d, 0.4 + Math.random() * 0.3, Math.sin(a) * d);
+        leaf.castShadow = true;
+        leaf.receiveShadow = true;
+        group.add(leaf);
+    }
+    group.position.set(x, y, z);
+    group.rotation.y = Math.random() * Math.PI * 2;
+    group.scale.setScalar(0.85 + Math.random() * 0.4);
+    group.userData.isBush = true;
+    scene.add(group);
+    registerCull(group, 120, 'bush');
+    return group;
+}
+
 for (let i = 0; i < 45; i++) {
     const x = (Math.random() - 0.5) * 650;
     const z = (Math.random() - 0.5) * 650;
@@ -172,7 +234,7 @@ for (let i = 0; i < 45; i++) {
     const cb = createCheckBlock({ seed: Math.random() * 10000 });
     cb.group.position.set(x, y, z);
     scene.add(cb.group);
-    registerCull(cb.group, 110, 'checkblock');
+    registerCull(cb.group, 150, 'checkblock');
     for (const col of cb.colliders) {
         const safeR = (typeof col.r === 'number' && isFinite(col.r) && col.r > 0) ? col.r : 0.5;
         // ✅ фикс: пропускаем коллайдеры с NaN-координатами (сыпали ошибки в консоль)
@@ -185,6 +247,23 @@ for (let i = 0; i < 45; i++) {
         colMesh.userData.isCollider = true;
         scene.add(colMesh); colliders.push(colMesh);
     }
+    // ✅ Добавляем ломаемые бочки чекблока в colliders (чтобы raycast их находил)
+    //    createBarrel возвращает Group с isBreakableBarrel — добавляем и Group, и её mesh-детей.
+    cb.group.traverse(o => {
+        if (o.userData && o.userData.isBreakableBarrel) {
+            colliders.push(o);
+            // ✅ Также добавляем дочерние mesh (raycast по ним работает)
+            o.traverse(child => { if (child.isMesh && colliders.indexOf(child) === -1) colliders.push(child); });
+        }
+    });
+    // ✅ Всегда куст рядом с чекблоком (немного в стороне от центра)
+    const bushAngle = Math.random() * Math.PI * 2;
+    const bushDist = 2.5 + Math.random() * 1.5;
+    const bx = x + Math.cos(bushAngle) * bushDist;
+    const bz = z + Math.sin(bushAngle) * bushDist;
+    spawnSimpleBush(bx, getGroundHeight(bx, bz), bz);
+    // ✅ Сохраняем позицию для спавна ящика (после загрузки crateManager)
+    checkBlockPositions.push({ x, y, z });
 }
 
 // ============================================================================
@@ -204,7 +283,7 @@ for (let i = 0; i < 14; i++) {
     vehicle.group.userData.id = 'veh_' + i;
     scene.add(vehicle.group);
     vehicles.push(vehicle);
-    registerCull(vehicle.group, 140, 'vehicle');
+    registerCull(vehicle.group, 200, 'vehicle');
     vehicle.group.traverse(o => {
         if (o.isMesh) {
             o.userData.isVehicle = true;
@@ -231,10 +310,10 @@ for (let gsi = 0; gsi < gsPositions.length; gsi++) {
     scene.add(gs.group);
     gs.group.traverse(obj => { if (obj.isMesh) { obj.userData.isGasStation = true; colliders.push(obj); } });
     gasStations.push(gs);
-    registerCull(gs.group, 180, 'gasstation');
+    registerCull(gs.group, 300, 'gasstation');
 }
 const gasStation = gasStations[0];
-const buggy = gasStation.garageCar;
+// ✅ buggy создаётся ниже, после цикла настройки всех 3 багги (см. строку ~497)
 
 // ============================================================================
 // СКЛАДЫ / АМБАРЫ (2 шт.)
@@ -250,98 +329,89 @@ for (let wi = 0; wi < warehousePositions.length; wi++) {
     wh.place(wp.x, wp.z, getGroundHeight, wp.yaw);
     scene.add(wh.group);
     wh.group.traverse(o => { if (o.isMesh) { o.userData.isWarehouse = true; colliders.push(o); } });
-    registerCull(wh.group, 220, 'warehouse');
+    registerCull(wh.group, 350, 'warehouse');
     warehouses.push(wh);
 }
 
 // ============================================================================
-// ✅ ЯЩИКИ (военные + деревянные) — в заправках и амбарах
+// 🛢️ ЛОМАЕМЫЕ БОЧКИ ВЕЗДЕ В МИРЕ (не только в машинах)
+//    Скрап падает при разрушении. Каждая бочка имеет 3 HP.
+// ============================================================================
+const BARREL_COLORS_WORLD = [0xa8321f, 0x2f5f8f, 0xb89a26, 0x3f6a3a, 0x6b6e70, 0x4a2a1a];
+const worldBarrels = [];
+
+// ✅ Спавн одиночной ломаемой бочки в позиции
+function spawnWorldBarrel(x, z, color) {
+    const y = getGroundHeight(x, z);
+    const c = color || BARREL_COLORS_WORLD[Math.floor(Math.random() * BARREL_COLORS_WORLD.length)];
+    const barrel = createBreakableBarrel(c);
+    barrel.position.set(x, y, z);
+    barrel.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(barrel);
+    colliders.push(barrel);
+    registerCull(barrel, 200, 'barrel');
+    worldBarrels.push(barrel);
+    return barrel;
+}
+
+// ✅ Бочки убраны с заправок и амбаров (по запросу пользователя).
+//    Оставлены только вдоль дороги и случайные по карте.
+// ✅ Одиночные бочки вдоль дороги (10 шт.)
+for (let i = 0; i < 10; i++) {
+    const t = i / 10 + Math.random() * 0.05;
+    if (t >= 1) continue;
+    const point = roadData.curve.getPointAt(t);
+    const offset = (Math.random() - 0.5) * 8;
+    const tangent = roadData.curve.getTangentAt(t);
+    const px = point.x - tangent.z * offset;
+    const pz = point.z + tangent.x * offset;
+    if (Math.sqrt(px * px + pz * pz) < 25) continue;
+    spawnWorldBarrel(px, pz);
+}
+// ✅ Случайные бочки по всей карте (10 шт.)
+for (let i = 0; i < 10; i++) {
+    const x = (Math.random() - 0.5) * 500;
+    const z = (Math.random() - 0.5) * 500;
+    if (Math.sqrt(x * x + z * z) < 30) continue;
+    spawnWorldBarrel(x, z);
+}
+console.log('[Barrels] Ломаемые бочки размещены в мире:', worldBarrels.length);
+
+// ============================================================================
+// ✅ ЯЩИКИ (военные + деревянные + инструментальные + toolbox) — везде
 // ============================================================================
 const crateManager = new CrateManager(scene, {
-    onOpenCrate: (crate, loot) => {
-        // ✅ При открытии ящика — показываем UI с лутом
-        showCrateLootUI(crate, loot);
-    },
+    onOpenCrate: (crate, loot) => {},
+    // ✅ Передаём функцию высоты земли — ящики следуют рельефу!
+    getGroundHeight: (x, z) => getGroundHeight(x, z),
 });
 crateManager.load().then(() => {
-    // ✅ Размещаем ящики в заправках: 1 военный + 3 деревянных
+    // ✅ Ящики в заправках: 1 военный + 3 деревянных + 2 инструментальных
     for (const gsp of gsPositions) {
         crateManager.spawnInGasStation(gsp);
     }
-    // ✅ Размещаем ящики в амбарах: 2 военных + 4 деревянных
+    // ✅ Ящики в амбарах: 2 военных + 4 деревянных + 2 инструментальных
     for (const wp of warehousePositions) {
         crateManager.spawnInWarehouse(wp);
     }
-    console.log('[Crates] Ящики размещены в заправках и амбарах');
+    // ✅ Ящики на чекблоках: 95% деревянный, 5% военный
+    for (const pos of checkBlockPositions) {
+        crateManager.spawnAtCheckBlock(pos);
+    }
+    // ✅ Toolbox в грузовиках на дороге (1 в каждом)
+    for (const v of vehicles) {
+        if (v && v.group) {
+            // проверяем что это грузовик (а не разбитая машина)
+            const isTruck = v.group.userData.id && v.group.userData.id.startsWith('veh_');
+            if (isTruck) {
+                crateManager.spawnToolboxInTruck(v.group.position, { dx: 0, dz: -1.5 });
+            }
+        }
+    }
+    console.log('[Crates] Ящики размещены в заправках, амбарах, чекблоках и грузовиках');
 }).catch(err => {
     console.warn('[Crates] Ошибка загрузки моделей ящиков:', err);
 });
-
-// ✅ UI для открытия ящика (простой overlay)
-function showCrateLootUI(crate, loot) {
-    // Удаляем старый UI если есть
-    const old = document.getElementById('crate-ui');
-    if (old) old.remove();
-
-    const ui = document.createElement('div');
-    ui.id = 'crate-ui';
-    ui.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:1500;';
-    const panel = document.createElement('div');
-    panel.style.cssText = 'background:rgba(25,25,25,0.95);border:2px solid #000;padding:24px;color:#fff;font-family:Arial,sans-serif;min-width:300px;';
-    const title = document.createElement('div');
-    title.textContent = crate.type === 'military' ? '📦 ВОЕННЫЙ ЯЩИК' : '📦 ДЕРЕВЯННЫЙ ЯЩИК';
-    title.style.cssText = 'font-size:18px;font-weight:bold;margin-bottom:14px;text-align:center;color:#ccc;border-bottom:1px solid #555;padding-bottom:8px;';
-    panel.appendChild(title);
-
-    const lootList = document.createElement('div');
-    lootList.style.cssText = 'margin-bottom:14px;';
-    if (loot.length === 0) {
-        lootList.textContent = 'Ящик пуст';
-        lootList.style.color = '#888';
-    } else {
-        for (const item of loot) {
-            const row = document.createElement('div');
-            row.style.cssText = 'padding:6px 8px;margin:4px 0;background:#333;display:flex;justify-content:space-between;align-items:center;';
-            const name = document.createElement('span');
-            name.textContent = item.id;
-            name.style.color = '#ddd';
-            const count = document.createElement('span');
-            count.textContent = '×' + item.count;
-            count.style.color = '#ff0';
-            count.style.fontWeight = 'bold';
-            row.appendChild(name);
-            row.appendChild(count);
-            lootList.appendChild(row);
-            // ✅ Добавляем предмет в инвентарь
-            inventory.addItem(item.id, item.count);
-        }
-    }
-    panel.appendChild(lootList);
-
-    const hint = document.createElement('div');
-    hint.textContent = 'Нажми F или ESC чтобы закрыть';
-    hint.style.cssText = 'text-align:center;color:#888;font-size:12px;';
-    panel.appendChild(hint);
-
-    ui.appendChild(panel);
-    document.body.appendChild(ui);
-
-    // ✅ Закрытие на F или ESC или клик
-    const closeHandler = (e) => {
-        if (e.code === 'KeyF' || e.code === 'Escape') {
-            ui.remove();
-            window.removeEventListener('keydown', closeHandler);
-            if (document.pointerLockElement === null) {
-                // восстанавливаем pointer lock
-            }
-        }
-    };
-    window.addEventListener('keydown', closeHandler);
-    ui.addEventListener('click', () => {
-        ui.remove();
-        window.removeEventListener('keydown', closeHandler);
-    });
-}
 
 // Убираем деревья и кусты, выросшие внутри складов
 const inWarehouseZone = (pos, mx, mz) => {
@@ -477,32 +547,53 @@ window.addEventListener('keyup', (e) => {
     if (e.code === 'Space') buggyInput.brake = false;
 });
 
-const gsX = gasStations[0].group.position.x;
-const gsZ = gasStations[0].group.position.z;
-const gsY = gasStations[0].group.position.y;
-const gsFloorGround = (x, z) => {
-    let h = getGroundHeight(x, z);
-    const lx = x - gsX, lz = z - gsZ;
-    if (lx > -11 && lx < 11 && lz > -8.4 && lz < 14.5) h = Math.max(h, gsY);
-    return h;
-};
+// ✅ Багги-контроллеры для всех 3 заправок (раньше был только 1 на gasStations[0])
+//    Каждый багги имеет свой контроллер; активный определяется по currentBuggyVehicle.
+const buggyControllers = [];   // массив контроллеров (один на заправку)
+const allBuggies = [];         // массив багги-объектов
+for (let bgi = 0; bgi < gasStations.length; bgi++) {
+    const gsB = gasStations[bgi];
+    const bg = gsB.garageCar;
+    if (!bg) continue;
+    const bgX = gsB.group.position.x;
+    const bgZ = gsB.group.position.z;
+    const bgY = gsB.group.position.y;
+    // ✅ Функция высоты пола для каждой заправки (багги не проваливается сквозь пол)
+    const bgFloorGround = (x, z) => {
+        let h = getGroundHeight(x, z);
+        const lx = x - bgX, lz = z - bgZ;
+        if (lx > -11 && lx < 11 && lz > -8.4 && lz < 14.5) h = Math.max(h, bgY);
+        return h;
+    };
+    const ctl = createBuggyController(bg, camera, {
+        getGroundHeight: bgFloorGround,
+        colliders: colliders,
+        get buildingColliders() { return buildingSystem.colliders; }
+    });
+    buggyControllers.push(ctl);
+    allBuggies.push(bg);
+    bg.group.traverse(o => { if (o.isMesh) { o.userData.isVehicle = true; colliders.push(o); } });
+    if (bg.seatHitboxes) {
+        for (const hb of bg.seatHitboxes) {
+            hb.userData.isBuggySeat = true;
+            hb.userData.buggyRef = bg;
+            hb.userData.buggyController = ctl;  // ✅ сохраняем контроллер прямо в hitbox
+            colliders.push(hb);
+        }
+    }
+}
+// ✅ Совместимость со старым кодом: buggy = первый багги, buggyDriverCtl = первый контроллер
+const buggy = allBuggies[0] || null;
+const buggyDriverCtl = buggyControllers[0] || null;
 
 const buildingSystem = createBuilding(scene, ground, getGroundHeight);
 const storageWorld = createStorageWorld(scene, getGroundHeight, buildingSystem);
 
-const buggyDriverCtl = createBuggyController(buggy, camera, {
-    getGroundHeight: gsFloorGround,
-    colliders: colliders,
-    get buildingColliders() { return buildingSystem.colliders; }
-});
-
-buggy.group.traverse(o => { if (o.isMesh) { o.userData.isVehicle = true; colliders.push(o); } });
-if (buggy.seatHitboxes) {
-    for (const hb of buggy.seatHitboxes) {
-        hb.userData.isBuggySeat = true;
-        hb.userData.buggyRef = buggy;
-        colliders.push(hb);
-    }
+// ✅ Найти контроллер багги по объекту багги
+function findBuggyController(buggyObj) {
+    if (!buggyObj) return null;
+    const idx = allBuggies.indexOf(buggyObj);
+    return idx >= 0 ? buggyControllers[idx] : null;
 }
 
 // ============================================================================
@@ -648,6 +739,29 @@ const BERDANA_COOLDOWN   = 0.50;   // 500 мс между выстрелами �
 const AK_MAG_SIZE        = 30;
 const BERDANA_MAG_SIZE   = 18;
 
+// ✅ ОТДАЧА КАМЕРЫ — камера плавно уходит вверх/зигзагом при выстреле, без тряски.
+//    Используем quaternion offset: controls видит камеру БЕЗ отдачи,
+//    а пользователь — С отдачей. Так нет конфликта с PointerLockControls.
+let recoilPitch = 0;       // накопленный pitch отдачи (рад, + = вверх)
+let recoilYaw = 0;         // накопленный yaw отдачи (рад, + = вправо)
+let recoilShotCount = 0;
+const _recoilQ = new THREE.Quaternion();      // текущий offset отдачи
+const _recoilEuler = new THREE.Euler(0, 0, 0, 'YXZ');  // порядок YXZ — как у камеры
+const _invRecoilQ = new THREE.Quaternion();
+const _pureQuat = new THREE.Quaternion();     // ✅ "чистый" quaternion камеры (без отдачи)
+const _hasPure = false;                        // флаг: есть ли сохранённый чистый quaternion
+// Паттерн зигзага (8 выстрелов, потом повторяется)
+const RECOIL_PATTERN = [
+    { x:  0.0, y: 1.0 },   // 1: прямо вверх
+    { x:  0.7, y: 0.8 },   // 2: вверх-вправо
+    { x:  0.3, y: 1.0 },   // 3: вверх чуть вправо
+    { x: -0.8, y: 0.7 },   // 4: вверх-влево
+    { x: -0.4, y: 1.0 },   // 5: вверх чуть влево
+    { x:  0.9, y: 0.6 },   // 6: сильно вправо
+    { x:  0.5, y: 0.9 },   // 7: вверх-вправо
+    { x: -0.6, y: 0.8 },   // 8: вверх-влево
+];
+
 // ✅ Флаг: показывать ли модель игрока от 1-го лица.
 //    В Rust 1-м лице тело игрока НЕ видно (только руки+топор).
 //    Поэтому по умолчанию false — модель скрыта, виден только топор.
@@ -727,6 +841,9 @@ function checkActiveWeapon() {
     else if (item.id === 'berdana')         { currentWeapon = 'berdana';          fpPlayer.setWeapon('berdana'); }
     else if (item.id === 'blueprint')       { currentWeapon = 'blueprint';        fpPlayer.setWeapon('none');    }
     else                                    { currentWeapon = 'none';             fpPlayer.setWeapon('none');    }
+    // ✅ Прицел виден только для АК-47 и берданки
+    const isGun = (currentWeapon === 'ak47' || currentWeapon === 'berdana');
+    showCrosshair(isGun, false);
 }
 
 // ============================================================================
@@ -777,6 +894,7 @@ controls.addEventListener('lock', () => {
     player.enabled = true;
     if (inventory.isOpen) inventory.close();
     if (isStorageMenuOpen()) closeStorageMenu();
+    if (isCrateUIOpen()) closeCrateUI();
 });
 controls.addEventListener('unlock', () => {
     if (!settingsUI || !settingsUI.isOpen()) overlay.style.display = 'flex';
@@ -881,6 +999,9 @@ function hitWithTool() {
         }
         return;
     }
+    // ✅ Бочки ломаемые — любой инструмент (топор/кирка) может ударить
+    const barrel = findBarrel(hit.object);
+    if (barrel) { hitBarrel(barrel); return; }
     // ✅ Топор → только деревья
     if (currentWeapon === 'rock') {
         const tree = findTree(hit.object);
@@ -895,6 +1016,11 @@ function hitWithTool() {
 
 // ✅ Выстрел из АК-47 (используется и для одиночного, и для автоогня)
 function fireAK() {
+    // ✅ НЕЛЬЗЯ СТРЕЛЯТЬ при беге
+    if (player.keys && player.keys.sprint && player.isMoving) {
+        showToast('❌ Нельзя стрелять на бегу!');
+        return;
+    }
     fpPlayer.triggerShoot();
     if (!window.__akAmmo) window.__akAmmo = AK_MAG_SIZE;
     if (window.__akAmmo <= 0) {
@@ -904,16 +1030,41 @@ function fireAK() {
     window.__akAmmo--;
     sound.play('akShot', { volume: 0.7 });
     showToast('🔫 ' + window.__akAmmo + '/' + AK_MAG_SIZE);
-    // 🐻 Проверяем попадание пули
-    const shotHit = getHit();
-    if (shotHit) {
-        const shotBear = findBear(shotHit.object);
+    // ✅ Буст прицела при выстреле (палки раздвигаются)
+    recoilBoost(14);
+    // ✅ ОТДАЧА КАМЕРЫ зигзагом — накапливаем offset (применяется в animate)
+    recoilShotCount++;
+    const rp = RECOIL_PATTERN[(recoilShotCount - 1) % RECOIL_PATTERN.length];
+    recoilPitch += 0.035 * rp.y;    // ✅ УВЕЛИЧЕНО: вверх (сильно)
+    recoilYaw += 0.022 * rp.x;      // ✅ УВЕЛИЧЕНО: вбок (зигзаг)
+    // ✅ РАЗБРОС пуль — пуля летит не точно по центру, а с отклонением
+    const spread = getCurrentSpread();
+    const spreadRad = (spread / 200) * 0.18;
+    const rx = (Math.random() - 0.5) * spreadRad;
+    const ry = (Math.random() - 0.5) * spreadRad;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+    dir.addScaledVector(right, rx).addScaledVector(up, ry).normalize();
+    const shotRay = new THREE.Raycaster(camera.position, dir, 0, 200);
+    const shotIntersects = shotRay.intersectObjects(colliders, true);
+    if (shotIntersects.length > 0) {
+        const hit = shotIntersects[0];
+        const shotBear = findBear(hit.object);
         if (shotBear && !shotBear.dead) shotBear.damage(38, { playerPos: camera.position });
+        const shotBarrel = findBarrel(hit.object);
+        if (shotBarrel) hitBarrel(shotBarrel);
     }
 }
 
 // ✅ Выстрел из берданки (винтовка, одиночные с кулдауном 0.5 сек)
 function fireBerdana() {
+    // ✅ НЕЛЬЗЯ СТРЕЛЯТЬ при беге
+    if (player.keys && player.keys.sprint && player.isMoving) {
+        showToast('❌ Нельзя стрелять на бегу!');
+        return;
+    }
     fpPlayer.triggerShoot();
     if (!window.__berdanaAmmo) window.__berdanaAmmo = BERDANA_MAG_SIZE;
     if (window.__berdanaAmmo <= 0) {
@@ -923,11 +1074,26 @@ function fireBerdana() {
     window.__berdanaAmmo--;
     sound.play('berdanaShot', { volume: 0.85 });
     showToast('🎯 ' + window.__berdanaAmmo + '/' + BERDANA_MAG_SIZE);
-    // 🐻 Проверяем попадание пули (берданка мощнее — 55 урона)
-    const shotHit = getHit();
-    if (shotHit) {
-        const shotBear = findBear(shotHit.object);
+    // ✅ Буст прицела при выстреле
+    recoilBoost(18);
+    // ✅ РАЗБРОС пуль (берданка чуть точнее АК)
+    const spread = getCurrentSpread();
+    const spreadRad = (spread / 200) * 0.12;
+    const rx = (Math.random() - 0.5) * spreadRad;
+    const ry = (Math.random() - 0.5) * spreadRad;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+    dir.addScaledVector(right, rx).addScaledVector(up, ry).normalize();
+    const shotRay = new THREE.Raycaster(camera.position, dir, 0, 200);
+    const shotIntersects = shotRay.intersectObjects(colliders, true);
+    if (shotIntersects.length > 0) {
+        const hit = shotIntersects[0];
+        const shotBear = findBear(hit.object);
         if (shotBear && !shotBear.dead) shotBear.damage(55, { playerPos: camera.position });
+        const shotBarrel = findBarrel(hit.object);
+        if (shotBarrel) hitBarrel(shotBarrel);
     }
 }
 
@@ -988,7 +1154,7 @@ let mouseDown = false;
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousedown', (e) => {
-    if (inventory.isOpen || isStorageMenuOpen()) return;
+    if (inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()) return;
     if (!player.enabled && !inBuggy) return;
     if (isDriver()) return;
 
@@ -1120,12 +1286,14 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
 
         if (inBuggy) {
-            if (currentBuggySeat) {
-                buggy.standUp(currentBuggySeat);
-                buggyDriverCtl.exitDriver();
+            if (currentBuggySeat && currentBuggyVehicle) {
+                currentBuggyVehicle.standUp(currentBuggySeat);
+                // ✅ Используем контроллер активного багги
+                const ctl = findBuggyController(currentBuggyVehicle);
+                if (ctl) ctl.exitDriver();
                 const exitDir = currentBuggySeat === 'driver' ? -1.8 : 1.8;
                 const exitOffset = new THREE.Vector3(exitDir, 0, 0);
-                exitOffset.applyQuaternion(buggy.group.quaternion);
+                exitOffset.applyQuaternion(currentBuggyVehicle.group.quaternion);
                 camera.position.add(exitOffset);
                 player.velocity.set(0, 0, 0);
                 inBuggy = false;
@@ -1138,7 +1306,8 @@ window.addEventListener('keydown', (e) => {
             }
         }
 
-        if (!player.enabled || inventory.isOpen || isStorageMenuOpen()) return;
+        // ✅ F работает даже без pointer lock (после закрытия ящика player.enabled=false)
+        if (inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()) return;
 
         const ray = new THREE.Raycaster();
         ray.setFromCamera(screenCenter, camera);
@@ -1150,18 +1319,16 @@ window.addEventListener('keydown', (e) => {
             openStorageMenu(storageHit, inventory);
             return;
         }
-        // ✅ Ящики (военные/деревянные) — открытие на F
+        // ✅ Ящики (военные/деревянные/инструментальные/toolbox) — открытие на F
+        //    Split-panel UI. Можно открывать сколько угодно раз.
+        //    Raycast по всей модели ящика (не по крышке).
         const crateHit = ray.intersectObjects(scene.children, true).find(h => h.distance <= 4.0);
         if (crateHit) {
             const crate = crateManager.findCrate(crateHit.object);
             if (crate) {
-                if (crate.opened) {
-                    showToast('📦 Ящик уже открыт');
-                } else {
-                    const loot = crateManager.openCrate(crate);
-                    crateManager.opts.onOpenCrate(crate, loot);
-                    if (document.pointerLockElement) document.exitPointerLock();
-                }
+                // ✅ Всегда открываем UI (даже пустой ящик — покажет пустые слоты)
+                openCrateUI(crate, inventory);
+                if (document.pointerLockElement) document.exitPointerLock();
                 return;
             }
         }
@@ -1182,12 +1349,12 @@ window.addEventListener('keydown', (e) => {
             }
             return;
         }
-        // Части газовых станций
+        // ✅ Части газовых станций + ворота гаража (увеличенный радиус 6.0)
         for (const gs of gasStations) {
             if (gs && gs.rig) {
                 const hits = ray.intersectObjects(gs.group.children, true);
                 for (const h of hits) {
-                    if (h.distance <= 4.0) {
+                    if (h.distance <= 6.0) {
                         let obj = h.object;
                         while (obj) {
                             if (obj.userData && obj.userData.part) {
@@ -1223,31 +1390,60 @@ window.addEventListener('keydown', (e) => {
                 }
             }
         }
-        // Посадка в багги
-        if (!inBuggy && buggy && buggy.seatHitboxes) {
-            const seatHits = ray.intersectObjects(buggy.seatHitboxes, false);
-            if (seatHits.length > 0 && seatHits[0].distance <= 4.0) {
-                const seatId = seatHits[0].object.userData.seatId;
-                if (seatId) {
-                    const seat = buggy.getSeat(seatId);
-                    if (seat && !seat.occupied) {
-                        buggy.sit(seatId, PLAYER_ID);
-                        inBuggy = true;
-                        currentBuggySeat = seatId;
-                        currentBuggyVehicle = buggy;
-                        if (seatId === 'driver') buggyDriverCtl.enterDriver();
-                        player.enabled = false;
-                        checkActiveWeapon();
-                        if (seatId === 'driver') {
-                            const t = buggy.getSeatTransform(seatId);
-                            if (t) { camera.position.copy(t.position); camera.position.y += 0.76; }
-                        } else {
-                            const transform = buggy.getSeatTransform(seatId);
-                            if (transform) { camera.position.copy(transform.position); }
+        // ✅ Машины на заправках (трак/разбитая машина с дверями/багажниками)
+        for (const gs of gasStations) {
+            if (!gs.vehicles) continue;
+            for (const key of Object.keys(gs.vehicles)) {
+                const v = gs.vehicles[key];
+                if (!v || typeof v.toggle !== 'function') continue;
+                const hits = ray.intersectObjects(v.group.children, true);
+                for (const h of hits) {
+                    if (h.distance <= 4.0) {
+                        let obj = h.object;
+                        while (obj) {
+                            if (obj.userData && obj.userData.part) {
+                                const partName = obj.userData.part;
+                                v.toggle(partName);
+                                showToast(`🚗 ${partName} ${v.isOpen(partName) ? 'открыто' : 'закрыто'}`);
+                                return;
+                            }
+                            obj = obj.parent;
                         }
-                        showToast(`🚗 Ты сел в вездеход (${seatId === 'driver' ? 'водитель' : 'пассажир'})`);
-                        return;
-                    } else { showToast('❌ Сиденье занято!'); }
+                    }
+                }
+            }
+        }
+        // ✅ Посадка в багги (любой из 3 заправок)
+        if (!inBuggy) {
+            // ✅ Проверяем сиденья всех багги
+            for (const bgTry of allBuggies) {
+                if (!bgTry || !bgTry.seatHitboxes) continue;
+                const seatHits = ray.intersectObjects(bgTry.seatHitboxes, false);
+                if (seatHits.length > 0 && seatHits[0].distance <= 4.0) {
+                    const seatId = seatHits[0].object.userData.seatId;
+                    if (seatId) {
+                        const seat = bgTry.getSeat(seatId);
+                        if (seat && !seat.occupied) {
+                            bgTry.sit(seatId, PLAYER_ID);
+                            inBuggy = true;
+                            currentBuggySeat = seatId;
+                            currentBuggyVehicle = bgTry;
+                            // ✅ Используем контроллер конкретного багги
+                            const ctl = findBuggyController(bgTry);
+                            if (seatId === 'driver' && ctl) ctl.enterDriver();
+                            player.enabled = false;
+                            checkActiveWeapon();
+                            if (seatId === 'driver') {
+                                const t = bgTry.getSeatTransform(seatId);
+                                if (t) { camera.position.copy(t.position); camera.position.y += 0.76; }
+                            } else {
+                                const transform = bgTry.getSeatTransform(seatId);
+                                if (transform) { camera.position.copy(transform.position); }
+                            }
+                            showToast(`🚗 Ты сел в вездеход (${seatId === 'driver' ? 'водитель' : 'пассажир'})`);
+                            return;
+                        } else { showToast('❌ Сиденье занято!'); return; }
+                    }
                 }
             }
         }
@@ -1299,7 +1495,9 @@ window.addEventListener('resize', () => {
 });
 
 // ============================================================================
-//  🌤 НЕБО И ОБЛАКА (GPU Шейдер, объёмный пар)
+//  🌤 НЕБО И ОБЛАКА — 3 режима: gpu (объёмные), square (блочные), none (без облаков)
+//     • uTime движется МЕДЛЕННО (×0.005) — больше никаких «1000 скорости»
+//     • Все 3 режима возвращаются как skyMaterials — настройки могут переключать
 // ============================================================================
 function createVolumetricSky(scene, sunLight) {
     const vertexShader = `
@@ -1310,10 +1508,8 @@ function createVolumetricSky(scene, sunLight) {
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
     `;
-    const fragmentShader = `
-        precision highp float;
-        uniform float uTime;
-        varying vec3 vWorldPosition;
+    // ✅ Общий snoise/fbm — используется в gpu и square режимах
+    const noiseGLSL = `
         vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
         vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
         vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
@@ -1365,38 +1561,108 @@ function createVolumetricSky(scene, sunLight) {
             for (int i = 0; i < 5; i++) { v += a * snoise(p); p *= 2.0; a *= 0.5; }
             return v;
         }
-        void main() {
-            vec3 dir = normalize(vWorldPosition);
-            float t = uTime * 0.02;
+        // ✅ Базовый градиент неба + солнце — общая функция для всех режимов
+        vec3 skyBase(vec3 dir) {
             float h = dir.y;
             vec3 horizon = vec3(0.78, 0.85, 0.92);
             vec3 zenith  = vec3(0.30, 0.55, 0.85);
             vec3 sky = mix(horizon, zenith, pow(max(h, 0.0), 0.45));
-
-            // облака
-            vec3 cp = dir * 3.0 + vec3(t, 0.0, t * 0.5);
-            float cloud = fbm(cp);
-            cloud = smoothstep(0.1, 0.7, cloud);
-            sky = mix(sky, vec3(1.0), cloud * 0.45 * pow(max(h, 0.0), 0.3));
-
-            // солнечный диск
+            // солнечный диск + гало
             float d = max(dot(dir, normalize(vec3(0.5, 0.7, 0.3))), 0.0);
             sky += pow(d, 256.0) * vec3(1.0, 0.85, 0.6) * 2.0;
             sky += pow(d, 16.0)  * vec3(1.0, 0.75, 0.5) * 0.3;
+            return sky;
+        }
+    `;
 
+    // ✅ Режим GPU: объёмные облака с медленным движением и мягким затуханием у горизонта
+    const gpuFragment = `
+        precision highp float;
+        uniform float uTime;
+        varying vec3 vWorldPosition;
+        ${noiseGLSL}
+        void main() {
+            vec3 dir = normalize(vWorldPosition);
+            vec3 sky = skyBase(dir);
+            // ✅ Медленное движение облаков (×0.05 сек — естественный дрейф)
+            float t = uTime * 0.05;
+            float h = dir.y;
+            // ✅ Объёмные облака: 2 слоя fbm с разной скоростью
+            vec3 cp1 = dir * 3.0 + vec3(t, 0.0, t * 0.5);
+            float cloud1 = fbm(cp1);
+            cloud1 = smoothstep(0.05, 0.65, cloud1);
+            vec3 cp2 = dir * 6.0 + vec3(t * 1.4, 0.0, t * 0.7);
+            float cloud2 = fbm(cp2);
+            cloud2 = smoothstep(0.2, 0.8, cloud2);
+            float cloud = mix(cloud1, cloud2, 0.35);
+            // ✅ Затухание у горизонта и сверху (облака только в средней полосе неба)
+            float band = smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.6, 0.95, h));
+            // ✅ Мягкие тени снизу облаков (затемнение)
+            float shadow = smoothstep(0.4, 0.7, cloud1) * 0.25;
+            vec3 cloudColor = mix(vec3(0.85, 0.87, 0.92), vec3(1.0), 1.0 - shadow);
+            sky = mix(sky, cloudColor, cloud * 0.7 * band);
             gl_FragColor = vec4(sky, 1.0);
         }
     `;
+
+    // ✅ Режим SQUARE: блочные облака (для слабых GPU)
+    const squareFragment = `
+        precision highp float;
+        uniform float uTime;
+        varying vec3 vWorldPosition;
+        ${noiseGLSL}
+        void main() {
+            vec3 dir = normalize(vWorldPosition);
+            vec3 sky = skyBase(dir);
+            float t = uTime * 0.03;  // медленный дрейф
+            float h = dir.y;
+            // ✅ Блочные облака: дискретизация шума на 4 уровня
+            vec3 cp = dir * 4.0 + vec3(t, 0.0, t * 0.4);
+            float n = fbm(cp);
+            n = floor(n * 4.0) / 4.0;  // квантуем на 4 уровня
+            float cloud = smoothstep(0.1, 0.4, n);
+            float band = smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.6, 0.95, h));
+            sky = mix(sky, vec3(0.95, 0.96, 0.98), cloud * 0.55 * band);
+            gl_FragColor = vec4(sky, 1.0);
+        }
+    `;
+
+    // ✅ Режим NONE: чистое небо, никаких облаков (вообще!)
+    const noneFragment = `
+        precision highp float;
+        uniform float uTime;
+        varying vec3 vWorldPosition;
+        ${noiseGLSL}
+        void main() {
+            vec3 dir = normalize(vWorldPosition);
+            vec3 sky = skyBase(dir);
+            // ✅ Никаких облаков — только градиент неба и солнце
+            gl_FragColor = vec4(sky, 1.0);
+        }
+    `;
+
     const skyGeo = new THREE.SphereGeometry(2000, 32, 16);
-    const skyMat = new THREE.ShaderMaterial({
-        uniforms: { uTime: { value: 0 } },
-        vertexShader, fragmentShader,
-        side: THREE.BackSide, depthWrite: false,
-    });
-    const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+    const skyMaterials = {
+        gpu: new THREE.ShaderMaterial({
+            uniforms: { uTime: { value: 0 } },
+            vertexShader, fragmentShader: gpuFragment,
+            side: THREE.BackSide, depthWrite: false,
+        }),
+        square: new THREE.ShaderMaterial({
+            uniforms: { uTime: { value: 0 } },
+            vertexShader, fragmentShader: squareFragment,
+            side: THREE.BackSide, depthWrite: false,
+        }),
+        none: new THREE.ShaderMaterial({
+            uniforms: { uTime: { value: 0 } },
+            vertexShader, fragmentShader: noneFragment,
+            side: THREE.BackSide, depthWrite: false,
+        }),
+    };
+    const skyMesh = new THREE.Mesh(skyGeo, skyMaterials.gpu);
     skyMesh.frustumCulled = false;
     scene.add(skyMesh);
-    return { skyMesh };
+    return { skyMesh, skyMaterials };
 }
 
 // ============================================================================
@@ -1548,23 +1814,30 @@ function animate() {
     sun.position.set(camera.position.x + 50, camera.position.y + 80, camera.position.z + 30);
     sun.target.position.copy(camera.position);
 
-    if (!isDriver()) buggyDriverCtl.tick(delta);
+    // ✅ Тикаем все контроллеры багги (кроме активного водителя)
+    const activeBuggyCtl = inBuggy ? findBuggyController(currentBuggyVehicle) : null;
+    for (const ctl of buggyControllers) {
+        if (ctl === activeBuggyCtl) continue;
+        ctl.tick(delta);
+    }
 
     if (inBuggy) {
         window.mySeatId = currentBuggySeat;
-        if (currentBuggySeat === 'driver') {
-            buggyDriverCtl.update(delta, {
+        if (currentBuggySeat === 'driver' && activeBuggyCtl) {
+            activeBuggyCtl.update(delta, {
                 forward: buggyInput.forward,
                 back: buggyInput.backward,
                 left: buggyInput.left,
                 right: buggyInput.right,
                 brake: buggyInput.brake
             });
-            const q = new THREE.Quaternion().copy(buggy.group.quaternion);
+            // ✅ Используем currentBuggyVehicle вместо глобального buggy
+            const q = new THREE.Quaternion().copy(currentBuggyVehicle.group.quaternion);
             q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
             camera.quaternion.copy(q);
         } else {
-            const transform = buggy.getSeatTransform(currentBuggySeat);
+            // ✅ Пассажир — позиция из трансформа сиденья активного багги
+            const transform = currentBuggyVehicle.getSeatTransform(currentBuggySeat);
             if (transform) { camera.position.copy(transform.position); }
         }
     } else {
@@ -1572,7 +1845,15 @@ function animate() {
     }
 
     if (!inBuggy) {
+        // === controls (player.update) — работает с камерой ===
         player.update(delta);
+        // ✅ ЗАМЕДЛЕНИЕ при прицеливании (ПКМ) — скорость ×0.45
+        //    + при присяде+прицел — ещё медленнее (×0.3), но пули ровные
+        if (fpPlayer && fpPlayer.adsAmount > 0.5) {
+            const aimSlow = player.isCrouching ? 0.3 : 0.45;
+            player.velocity.x *= aimSlow;
+            player.velocity.z *= aimSlow;
+        }
         const buildResult = buildingSystem.collideCircle(camera.position, 0.35, camera.position.y - 1.7);
         if (buildResult && buildResult.grounded && buildResult.groundY !== null) {
             camera.position.y = buildResult.groundY + 1.7;
@@ -1589,6 +1870,18 @@ function animate() {
             const res = wh.resolveAll(feet, 0.35, 1.8, 0.6, player.velocity.y);
             camera.position.x = feet.x; camera.position.z = feet.z;
             if (res.grounded && res.ground !== null) { camera.position.y = res.ground + 1.7; player.velocity.y = 0; player.isOnGround = true; }
+        }
+        // === ОТДАЧА: плавный возврат recoil к 0 ===
+        const recoverFactor = Math.max(0, 1 - 4 * delta);  // 4 = скорость возврата
+        recoilPitch *= recoverFactor;
+        recoilYaw *= recoverFactor;
+        if (Math.abs(recoilPitch) < 0.00005) recoilPitch = 0;
+        if (Math.abs(recoilYaw) < 0.00005) recoilYaw = 0;
+        // === применяем отдачу через rotateX/rotateY (локальные оси камеры) ===
+        //    Это НЕ ломает PointerLockControls — он продолжает работать с мышью
+        if (recoilPitch > 0.0001 || Math.abs(recoilYaw) > 0.0001) {
+            camera.rotateX(recoilPitch);   // локальная ось X (вверх/вниз)
+            camera.rotateY(recoilYaw);     // локальная ось Y (влево/вправо)
         }
     }
 
@@ -1665,6 +1958,21 @@ function animate() {
         });
     }
 
+    // ✅ Обновление динамического прицела (точка + 4 палки)
+    if (currentWeapon === 'ak47' || currentWeapon === 'berdana') {
+        const isMoving = player.velocity.length() > 0.5;
+        const isSprinting = isMoving && (player.keys && player.keys.sprint);
+        updateCrosshair(delta, {
+            weapon: currentWeapon,
+            moving: player.isMoving,
+            jumping: !player.isOnGround,
+            running: isSprinting,
+            crouching: player.isCrouching,
+            aiming: fpPlayer && fpPlayer.adsAmount > 0.5,  // ПКМ зажата
+            shooting: mouseDown && currentWeapon === 'ak47',
+        });
+    }
+
 
 
     // Обновление машин, заправок, складов
@@ -1712,8 +2020,13 @@ function animate() {
     }
 
     updateDistanceCulling();
-    if (skySystem && skySystem.skyMesh) {
-        skySystem.skyMesh.material.uniforms.uTime.value = performance.now();
+    // ✅ Обновляем uTime для всех материалов неба (чтобы при переключении режима не было скачка)
+    if (skySystem && skySystem.skyMaterials) {
+        const t = performance.now() * 0.001;  // в секундах
+        for (const key in skySystem.skyMaterials) {
+            const m = skySystem.skyMaterials[key];
+            if (m && m.uniforms && m.uniforms.uTime) m.uniforms.uTime.value = t;
+        }
     }
     renderer.info.reset();
     // ✅ Рендерим основную сцену, ЗАТЕМ руки + оружие поверх (без composer)

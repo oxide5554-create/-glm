@@ -142,9 +142,14 @@ export function createGasStation(opts = {}) {
   const LS = opts.lightScale ?? 1;
   const group = new THREE.Group(), rig = makeRig();
   const boxes = [], lights = [], extras = [], U = { value: 0 };
-  const conc = mk(0x8d8a82, .95, 0), wallM = mk(0x9a9285, .9, 0), wallD = mk(0x6f6a60, .9, 0);
-  const roofM = mk(0x5a5750, .9, .1), steel = mk(0x6b6f72, .5, .6);
-  const dark = mk(0x1d1f21, .7, .5), trim = mk(0x17181a, .8, .2, false), glass = glassMat();
+  // ✅ Серо-белая заправка (убраны все тёплые/розовые цвета):
+  //    бетон — серый, стены — бело-серые, тёмные акценты — тёмно-серые.
+  const conc = mk(0xa8a8a8, .95, 0);    // бетон — серый
+  const wallM = mk(0xe8e8e8, .9, 0);     // стены — бело-серые
+  const wallD = mk(0x909090, .9, 0);     // тёмные стены — серые
+  const roofM = mk(0x4a4a4a, .9, .1);    // крыша — тёмно-серая
+  const steel = mk(0x8a8a8a, .5, .6);    // сталь — серый металлик
+  const dark = mk(0x2a2a2a, .7, .5), trim = mk(0x2a2a2a, .8, .2, false), glass = glassMat();
 
   const solid = (x0,y0,z0,x1,y1,z1,m,collide=true) => {
     const o = at(group, rbox(x1-x0,y1-y0,z1-z0,.02,m), (x0+x1)/2,(y0+y1)/2,(z0+z1)/2);
@@ -220,11 +225,12 @@ export function createGasStation(opts = {}) {
   at(group, rbox(.5,.25,.45,.04,steel), GD.x,3.55,GD.zr-3);
 
   const goods = [];
-  const PAL = [0xc0392b,0xd4a017,0x2e7d32,0x1f5f99,0xe8e0c8,0xb5651d];
+  // ✅ Убран красный/розовый — только нейтральные цвета товаров
+  const PAL = [0x4a5560,0x6a7480,0x3a4450,0x5a6470,0xe8e0c8,0x8a8e92];
   const shelf = (x,z,rotY,len,depth) => {
     const g = new THREE.Group(); g.position.set(x,0,z); g.rotation.y = rotY;
     group.add(g); g.updateMatrix();
-    const bm = mk(0x7a7468,.7,.4), ys=[.28,.82,1.36,1.9];
+    const bm = mk(0x6a6a6a,.7,.4), ys=[.28,.82,1.36,1.9];
     for (const y of ys) at(g, rbox(len,.035,depth,.008,bm), 0,y-.0175,0);
     for (let i=0;i<=Math.round(len/1.1);i++) for (const s of [-1,1])
       at(g, rbox(.05,2.1,.05,.01,dark), -len/2+i*len/Math.round(len/1.1),1.05,s*(depth/2-.03));
@@ -245,25 +251,25 @@ export function createGasStation(opts = {}) {
 
   const gl = shelf(-7.72,-4.3,H,5.2,.5); tbOn(gl,'toolbox_g0',0,.82,0);
   const gr = shelf(-1.47,-4.3,-H,5.2,.5); tbOn(gr,'toolbox_g1',.5,1.36,0);
-  solid(-7.4,.0,-8.0, -5.0,1.1,-7.25, mk(0x6a4b2e,.85,.05));
-  at(group, rbox(2.4,.08,.7,.015,mk(0x6a4b2e,.85,.05)), -6.2,.95,-7.6);
+  solid(-7.4,.0,-8.0, -5.0,1.1,-7.25, mk(0x6a6e72,.85,.05));
+  at(group, rbox(2.4,.08,.7,.015,mk(0x6a6e72,.85,.05)), -6.2,.95,-7.6);
   toolbox(rig,'toolbox_g2',group,-5.7,.99,-7.6,rn(-.2,.2));
   
   const wl = shelf(1.47,-5.35,H,4.7,.5); tbOn(wl,'toolbox_s0',-1.7,.82,0); tbOn(wl,'toolbox_s1',.9,1.36,0);
   const wb = shelf(4.1,-7.72,0,4.4,.5); tbOn(wb,'toolbox_s2',0,1.9,0);
   const i2 = shelf(5.2,-4.9,H,3.6,.9); tbOn(i2,'toolbox_s3',0,1.36,.22);
-  solid(6.2,0,-2.8, 7,1,-.4, mk(0x6a4b2e,.8,.1));
-  solid(6.9,0,-7.9, 7.9,2,-4.7, mk(0xcfcbc0,.5,.3));
+  solid(6.2,0,-2.8, 7,1,-.4, mk(0x6a6e72,.8,.1));
+  solid(6.9,0,-7.9, 7.9,2,-4.7, mk(0xc8c8c8,.5,.3));
   for (const x of [3.2,6]) at(group,bx(1.6,.04,.5,emis(0xf2f6ff,1.1)),x,3.74,-4);
   lamp(4.6,3.3,-4,0xe8f2ff,2.6,11);
-  lamp(-4.55,2.9,-5.8,0xffcf8a,3,11);
+  lamp(-4.55,2.9,-5.8,0xe8f2ff,3,11);
 
-  at(group, rbox(19,.35,9,.05,mk(0xb8b2a2,.7,.2)), 0,4.85,8.8);
-  at(group, rbox(19.2,.75,.25,.04,mk(0xb23a2a,.5,.3)), 0,4.75,13.4);
-  at(group,new THREE.Mesh(new THREE.PlaneGeometry(6,.55), new THREE.MeshStandardMaterial({map:signTex(['ЗАПРАВКА 24 ЧАСА'],'#b23a2a','#f4ecd0',768,96)})),0,4.75,13.53);
+  at(group, rbox(19,.35,9,.05,mk(0xb0b0b0,.7,.2)), 0,4.85,8.8);
+  at(group, rbox(19.2,.75,.25,.04,mk(0x4a5560,.5,.3)), 0,4.75,13.4);
+  at(group,new THREE.Mesh(new THREE.PlaneGeometry(6,.55), new THREE.MeshStandardMaterial({map:signTex(['ЗАПРАВКА 24 ЧАСА'],'#4a4a4a','#f0f0f0',768,96)})),0,4.75,13.53);
   boxes.push(bb(-9.5,4.55,4.3,9.5,5.05,13.3));
   for (const x of [-9,9]) for (const z of [6,12]) {
-    at(group,cyl(.22,.25,4.7,mk(0x8a8a82,.6,.4),14),x,2.35,z);
+    at(group,cyl(.22,.25,4.7,mk(0x7a7a7a,.6,.4),14),x,2.35,z);
     boxes.push(bb(x-.25,0,z-.25,x+.25,4.7,z+.25));
   }
   lamp(0,4.3,9,0xe8f2ff,3.2,16);
@@ -272,8 +278,8 @@ export function createGasStation(opts = {}) {
     for (const pz of [6.7,8.3]) {
       const g = new THREE.Group(); g.position.set(ix,.18,pz); group.add(g);
       at(g,rbox(.5,.2,.7,.04,dark),0,.1,0);
-      at(g,rbox(.44,1,.62,.06,mk(0xa83a2a,.5,.3)),0,.7,0);
-      at(g,rbox(.48,.45,.66,.06,mk(0xcfcbc0,.55,.2)),0,1.42,0);
+      at(g,rbox(.44,1,.62,.06,mk(0x4a5560,.5,.3)),0,.7,0);
+      at(g,rbox(.48,.45,.66,.06,mk(0xc8c8c8,.55,.2)),0,1.42,0);
       at(g,rbox(.54,.12,.72,.05,dark),0,1.72,0);
       boxes.push(bb(ix-.3,.18,pz-.38,ix+.3,1.95,pz+.38));
     }
@@ -332,7 +338,8 @@ export function createGasStation(opts = {}) {
 
   attachCollision(rig, group, boxes, () => {
     const out = [];
-    if (GD.p < .88) out.push(bb(-6.65,0,-.45,-2.45,3,-.3));
+    // ✅ Коллайдер ворот гаража убирается когда дверь открыта хотя бы наполовину (GD.p >= 0.5)
+    if (GD.p < 0.5) out.push(bb(-6.65,0,-.45,-2.45,3,-.3));
     const d = rig.parts.shopDoor;
     if (d && d.cur < .1) out.push(bb(4.2,0,-.3,5.4,2.5,0));
     return out;
@@ -366,10 +373,14 @@ export function createGasStation(opts = {}) {
       if (which.truck && !station.vehicles.truck) {
         const t=createTruck({seed:seed+3,pad:false});
         t.resolve=legacyResolve(t); slots.truck.add(t.group); extras.push(t); station.vehicles.truck=t;
+        // ✅ Помечаем все mesh машины isVehicle — для коллизий игрока
+        t.group.traverse(o => { if (o.isMesh) o.userData.isVehicle = true; });
       }
       if (which.wreck && !station.vehicles.wreck) {
         const w=createWreckCar({seed:seed+5,pad:false});
         w.resolve=legacyResolve(w); slots.wreck.add(w.group); extras.push(w); station.vehicles.wreck=w;
+        // ✅ Помечаем все mesh машины isVehicle — для коллизий игрока
+        w.group.traverse(o => { if (o.isMesh) o.userData.isVehicle = true; });
       }
       return station.vehicles;
     },

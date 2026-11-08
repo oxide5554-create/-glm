@@ -1,9 +1,5 @@
 // scr/ui/crosshair.js
 // ✅ Динамический прицел: точка по центру + 4 палки (квадрат), показывающие разброс.
-//    - Палки увеличиваются при: движении, прыжке, отдаче
-//    - Палки уменьшаются при: присяде, прицеливании (ПКМ)
-//    - Точка исчезает при прицеливании (ПКМ)
-//    - Прицел виден только когда в руках АК-47 или берданка
 
 const CSS_ID = 'dynamic-crosshair-style';
 const CSS = `
@@ -109,7 +105,6 @@ export function updateCrosshair(dt, state = {}) {
   if (state.shooting) spread += 12;
   if (state.crouching) spread -= 4;
   if (state.aiming) spread -= 6;
-  // ✅ Присяд + прицел = почти ровные пули (минимальный разброс)
   if (state.crouching && state.aiming) spread = Math.min(spread, 2);
   spread = Math.max(2, Math.min(60, spread));
   targetSpread = spread;

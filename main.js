@@ -92,20 +92,64 @@ window.__registerCull = registerCull;
 
 // ============================================================================
 // РЕНДЕРЕР
+// ✅ Уменьшена нагрузка + мягкая обработка context loss
 // ============================================================================
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+let renderer;
+try {
+    renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        powerPreference: 'default',
+        failIfMajorPerformanceCaveat: false,
+        preserveDrawingBuffer: false,
+    });
+} catch (err) {
+    console.error('[WebGL] Не удалось создать renderer:', err);
+    // ✅ Показываем сообщение + кнопку перезагрузки (НЕ выбрасываем ошибку)
+    document.body.innerHTML = '<div style="position:fixed;inset:0;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;text-align:center;padding:20px;flex-direction:column;gap:20px">' +
+        '<h1 style="color:#ff5a4d">⚠️ WebGL заблокирован</h1>' +
+        '<p style="font-size:18px;max-width:500px">Браузер заблокировал WebGL.</p>' +
+        '<p style="font-size:16px;max-width:500px;color:#aaa">Закрой все вкладки с игрой, подожди 10 секунд,<br>открой новую вкладку и зайди на localhost:8080</p>' +
+        '<button onclick="location.reload()" style="padding:12px 32px;font-size:18px;background:#4a8aff;color:#fff;border:0;border-radius:6px;cursor:pointer">Попробовать снова</button>' +
+        '</div>';
+    // ✅ НЕ выбрасываем ошибку — просто останавливаем выполнение
+    window.__webglBlocked = true;
+}
+// ✅ Если WebGL заблокирован — останавливаем выполнение скрипта
+if (window.__webglBlocked) {
+    // Заглушка renderer чтобы код не падал
+    renderer = { domElement: document.createElement('div'), setSize: ()=>{}, setPixelRatio: ()=>{}, info: {autoReset:false, render:{}}, shadowMap: {}, toneMapping: 0, toneMappingExposure: 1, outputColorSpace: 0, localClippingEnabled: false };
+}
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+// ✅ pixelRatio = 1.0 (не ниже — иначе пиксели). FXAA сгладит края.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.0));
 renderer.info.autoReset = false;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;  // ✅ обратно PCFSoft (красивее)
 renderer.shadowMap.normalBias = 0.003;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.localClippingEnabled = true;
+renderer.localClippingEnabled = false;
 window.__renderer = renderer;
 document.body.appendChild(renderer.domElement);
+
+// ✅ Обработка WebGL context loss — авто-перезагрузка через 2 сек
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    console.warn('[WebGL] Context lost — перезагрузка через 2 сек...');
+    // ✅ Показываем overlay
+    const lostDiv = document.createElement('div');
+    lostDiv.id = 'webgl-lost';
+    lostDiv.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;font-size:24px;z-index:99999;flex-direction:column;gap:20px';
+    lostDiv.innerHTML = '<div>⚠️ WebGL context lost</div><div style="font-size:18px;color:#aaa">Перезагрузка через 2 секунды...</div>';
+    document.body.appendChild(lostDiv);
+    setTimeout(() => location.reload(), 2000);
+}, false);
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+    console.log('[WebGL] Context восстановлен');
+    const lostDiv = document.getElementById('webgl-lost');
+    if (lostDiv) lostDiv.remove();
+}, false);
 
 // ============================================================================
 // ОСВЕЩЕНИЕ
@@ -119,13 +163,14 @@ scene.add(ambient);
 const sun = new THREE.DirectionalLight(0xfff4d6, 1.8);
 sun.position.set(50, 80, 30);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+// ✅ Уменьшено: shadow map 1024 (было 2048), area 40 (было 60) — меньше видеопамяти
+sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.camera.near = 0.5;
-sun.shadow.camera.far = 250;
-sun.shadow.camera.left = -60;
-sun.shadow.camera.right = 60;
-sun.shadow.camera.top = 60;
-sun.shadow.camera.bottom = -60;
+sun.shadow.camera.far = 200;
+sun.shadow.camera.left = -40;
+sun.shadow.camera.right = 40;
+sun.shadow.camera.top = 40;
+sun.shadow.camera.bottom = -40;
 sun.shadow.bias = -0.0005;
 sun.shadow.normalBias = 0.02;
 scene.add(sun);
@@ -154,7 +199,8 @@ function createStoneMesh() {
     return mesh;
 }
 
-for (let i = 0; i < 50; i++) {
+// ✅ Уменьшено: 50→25 камней (меньше draw calls)
+for (let i = 0; i < 25; i++) {
     const stone = createStoneMesh();
     const sx = (Math.random() - 0.5) * 350;
     const sz = (Math.random() - 0.5) * 350;
@@ -176,7 +222,9 @@ for (let i = 0; i < 50; i++) {
 // ✅ Уменьшено количество для оптимизации (30→60 фпс):
 //    деревья 220→120, трава 18000→6000, кусты 180→100, папоротники 1200→400, цветы 2500→800
 // ============================================================================
-const flora = generateFlora(scene, { camera: camera, area: 550, trees: 120, grass: 6000, bushes: 100, ferns: 400, flowers: 800 });
+// ✅ Сильно уменьшено для предотвращения WebGL context loss:
+//    деревья 120→60, трава 6000→2500, кусты 100→50, папоротники 400→150, цветы 800→300
+const flora = generateFlora(scene, { camera: camera, area: 550, trees: 60, grass: 2500, bushes: 50, ferns: 150, flowers: 300 });
 flora.trees.traverse(obj => { if (obj.isMesh) colliders.push(obj); });
 flora.bushes.traverse(obj => { if (obj.isMesh) colliders.push(obj); });
 // ✅ Culling для деревьев/кустов — скрываются когда далеко (зависит от зоны прорисовки)
@@ -226,7 +274,8 @@ function spawnSimpleBush(x, y, z) {
     return group;
 }
 
-for (let i = 0; i < 45; i++) {
+// ✅ Уменьшено: 45→20 чекблоков
+for (let i = 0; i < 20; i++) {
     const x = (Math.random() - 0.5) * 650;
     const z = (Math.random() - 0.5) * 650;
     if (Math.sqrt(x * x + z * z) < 20) continue;
@@ -270,8 +319,9 @@ for (let i = 0; i < 45; i++) {
 // МАШИНЫ НА ДОРОГЕ (14 шт.)
 // ============================================================================
 const vehicles = [];
-for (let i = 0; i < 14; i++) {
-    const t = i / 14;
+// ✅ Уменьшено: 14→8 машин
+for (let i = 0; i < 8; i++) {
+    const t = i / 8;
     const point = roadData.curve.getPointAt(t);
     if (Math.sqrt(point.x * point.x + point.z * point.z) < 25) continue;
     const tangent = roadData.curve.getTangentAt(t);
@@ -897,7 +947,10 @@ controls.addEventListener('lock', () => {
     if (isCrateUIOpen()) closeCrateUI();
 });
 controls.addEventListener('unlock', () => {
-    if (!settingsUI || !settingsUI.isOpen()) overlay.style.display = 'flex';
+    // ✅ НЕ показываем overlay если открыто меню (инвентарь/ящик/крафт/сундук/настройки)
+    const anyMenuOpen = inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()
+        || (settingsUI && settingsUI.isOpen()) || (window.__craftOpen);
+    if (!anyMenuOpen) overlay.style.display = 'flex';
     player.enabled = false;
     mouseDown = false;
 });
@@ -1672,13 +1725,15 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new OutputPass());
 
+// ✅ Bloom выключен по умолчанию (для производительности) — включается в настройках
 const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2),
-    0.22, 0.4, 0.88
+    new THREE.Vector2(window.innerWidth / 4, window.innerHeight / 4),
+    0.18, 0.4, 0.88
 );
+bloomPass.enabled = false;  // ✅ выключен по умолчанию
 composer.addPass(bloomPass);
 { const _bloomSetSize = bloomPass.setSize.bind(bloomPass);
-  bloomPass.setSize = (w, h) => _bloomSetSize(Math.max(1, w >> 1), Math.max(1, h >> 1)); }
+  bloomPass.setSize = (w, h) => _bloomSetSize(Math.max(1, w >> 2), Math.max(1, h >> 2)); }
 
 const colorGradingShader = {
     uniforms: {
@@ -1719,13 +1774,14 @@ const fpsEl = document.createElement('div');
 fpsEl.style.cssText = 'position:fixed;top:10px;right:10px;z-index:7;pointer-events:none;background:rgba(10,14,18,0.65);border:2px solid rgba(150,160,170,0.4);border-radius:6px;padding:6px 10px;font:bold 12px Consolas,monospace;color:#fff;line-height:1.55;text-align:right;white-space:pre;';
 document.body.appendChild(fpsEl);
 
-const perf = { frames: 0, acc: 0, last: performance.now(), fps: 60, ms: 16, quality: 0, cool: 0, upStreak: 0, enabled: true, bloomManual: false, auto: true };
+// ✅ Стартуем с уровня 1 (1.0x, тени 1024, без bloom) — баланс качества и стабильности
+const perf = { frames: 0, acc: 0, last: performance.now(), fps: 60, ms: 16, quality: 1, cool: 0, upStreak: 0, enabled: true, bloomManual: false, auto: true };
 const QUALITY = [
-    [1.5, 2048, true],
-    [1.25, 2048, true],
-    [1.0, 1024, true],
-    [0.85, 1024, false],
-    [0.7, 0, false],
+    [1.0, 2048, false],   // 1: лучшее (старт здесь, без bloom для стабильности)
+    [1.0, 1024, false],   // 2: среднее
+    [0.9, 512, false],    // 3: ниже среднего
+    [0.8, 512, false],    // 4: слабое
+    [0.7, 0, false],      // 5: мин (без теней)
 ];
 function applyQuality() {
     const [prCap, smSize, bloomOn] = QUALITY[perf.quality];
@@ -1882,6 +1938,13 @@ function animate() {
         if (recoilPitch > 0.0001 || Math.abs(recoilYaw) > 0.0001) {
             camera.rotateX(recoilPitch);   // локальная ось X (вверх/вниз)
             camera.rotateY(recoilYaw);     // локальная ось Y (влево/вправо)
+            // ✅ ОГРАНИЧЕНИЕ камеры: pitch не больше ±85° (как обычный взгляд верх/низ)
+            //    Чтобы от отдачи нельзя было сделать 360° сальто
+            const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+            const maxPitch = 85 * Math.PI / 180;  // 85° в радианах
+            if (e.x > maxPitch) e.x = maxPitch;
+            if (e.x < -maxPitch) e.x = -maxPitch;
+            camera.quaternion.setFromEuler(e);
         }
     }
 

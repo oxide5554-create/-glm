@@ -163,7 +163,7 @@ function _replacePendingBarrels() {
 // ✅ Скрап — использует GLB-модель rust_scrap_v2.glb если загружена, иначе процедурный.
 //    ✅ Физика: scrap падает с начальным случайным импульсом и гравитацией,
 //       пока не коснётся земли (getGroundHeight).
-function createScrap({ seed = Math.random() * 10000, spin = false, physics = true, getGroundHeight = null } = {}) {
+function createScrap({ seed = Math.random() * 10000, spin = false, physics = true, getGroundHeight = null, restY = null } = {}) {
   const group = new THREE.Group();
 
   // ✅ GLB-модель если загружена
@@ -210,21 +210,24 @@ function createScrap({ seed = Math.random() * 10000, spin = false, physics = tru
     0.5 + Math.random() * 1.0,      // слабо вверх
     (Math.random() - 0.5) * 0.8    // слабый вбок Z
   ) : new THREE.Vector3(0, 0, 0);
-  let physicsActive = physics && !!getGroundHeight;
+  let physicsActive = physics && (!!getGroundHeight || restY !== null);
 
   return {
     group,
     update(dt) {
       // ✅ Физика падения
-      if (physicsActive && getGroundHeight) {
+      // ✅ НОВОЕ: если задан restY — скрап падает до этой высоты (платформа),
+      //    иначе до земли (getGroundHeight). Решает проблему: скрап из бочек
+      //    в кузове грузовика падал сквозь пол на землю. Теперь падает на пол кузова.
+      if (physicsActive && (getGroundHeight || restY !== null)) {
         velocity.y -= 9.8 * dt;              // гравитация
         group.position.x += velocity.x * dt;
         group.position.y += velocity.y * dt;
         group.position.z += velocity.z * dt;
-        // ✅ Проверка столкновения с землёй
-        const groundY = getGroundHeight(group.position.x, group.position.z);
-        if (group.position.y <= groundY) {
-          group.position.y = groundY;        // фиксируем на земле
+        // ✅ Если restY задан — падаем до него; иначе до земли
+        const floorY = (restY !== null) ? restY : getGroundHeight(group.position.x, group.position.z);
+        if (group.position.y <= floorY) {
+          group.position.y = floorY;        // фиксируем на поверхности
           velocity.set(0, 0, 0);
           physicsActive = false;             //停止 падения
         }
@@ -288,9 +291,21 @@ export function createBreakableBarrel(color = 0xa8321f) {
         _pendingBarrels.push(group);
     }
     group.userData.isBreakableBarrel = true;
-    group.userData.health = 3;
-    group.userData.maxHealth = 3;
+    // ✅ ИЗМЕНЕНО: HP 3 → 2 (было слишком долго ломать топором/киркой)
+    group.userData.health = 2;
+    group.userData.maxHealth = 2;
     group.userData.barrelColor = color;
+    // ✅ НОВОЕ: ПОЛНЫЙ ХИТБОКС — невидимый цилиндр, покрывающий ВСЮ бочку.
+    //    Раньше raycast мог попасть только по GLB-мешу (sparse: тонкие рёбра,
+    //    крышка, caps). Теперь любой удар в объёме бочки регистрируется.
+    //    material.visible=false → не рендерится, но raycast работает.
+    const hitbox = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.5, 1.0, 12),
+        new THREE.MeshBasicMaterial({ visible: false })
+    );
+    hitbox.position.y = 0.5;  // центр цилиндра на пол-высоты бочки (~0.9м)
+    hitbox.userData.isBarrelHitbox = true;
+    group.add(hitbox);
     return group;
 }
 
@@ -315,9 +330,11 @@ export function createBarrelDebris(scene, x, y, z, color) {
     return debrisGroup;
 }
 
-export function spawnScrap(scene, x, y, z, getGroundHeight = null) {
+export function spawnScrap(scene, x, y, z, getGroundHeight = null, restY = null) {
     // ✅ physics + getGroundHeight — скрап падает пока не коснётся земли
-    const scrap = createScrap({ seed: Math.random() * 10000, spin: false, physics: true, getGroundHeight });
+    // ✅ НОВОЕ: restY — если задан, скрап падает до этой высоты (платформа грузовика),
+    //    а не до земли. Используется для бочек в кузове: скрап падает на пол кузова.
+    const scrap = createScrap({ seed: Math.random() * 10000, spin: false, physics: true, getGroundHeight, restY });
     scrap.group.position.set(x, y, z);
 
     // ✅ Небольшой случайный наклон, чтобы скрап лежал естественно, а не торчал вертикально

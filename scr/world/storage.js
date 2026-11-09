@@ -101,13 +101,27 @@ export function createStorageWorld(scene, getHeight, buildingSystem) {
 
   function tryPlace() {
     if (!valid || !pendingPos) return null;
+    // ✅ НОВОЕ: проверка перекрытия со стенами — по позиции ПРИЗРАКА (не камеры).
+    //    Раньше проверялось по camera.position — призрак мог быть у стены,
+    //    и половина сундука проходила сквозь стену.
+    if (buildingSystem && buildingSystem.colliders) {
+      const r = 0.55;   // радиус сундука
+      for (const c of buildingSystem.colliders) {
+        if (c.on === false) continue;
+        if (c.step) continue;   // фундаменты — можно ставить НА них
+        if (pendingPos.x + r > c.minX && pendingPos.x - r < c.maxX &&
+            pendingPos.z + r > c.minZ && pendingPos.z - r < c.maxZ) {
+          return null;   // перекрывает стену — нельзя ставить
+        }
+      }
+    }
     const id = `chest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const model = buildStorageChestModel();
     model.position.copy(pendingPos);
     group.add(model);
     const chest = { 
       id, mesh: model, position: pendingPos.clone(), 
-      slots: new Array(24).fill(null), owner: null, 
+      slots: new Array(18).fill(null), owner: null,   // ✅ 18 слотов (3 ряда) — как инвентарь
       hp: 100, maxHp: 100 
     };
     chests.push(chest);
@@ -170,7 +184,17 @@ export function createStorageWorld(scene, getHeight, buildingSystem) {
   function tryInteract(ray, maxDist = 3.5) {
     for (const c of chests) {
       const hits = ray.intersectObject(c.mesh, true);
-      if (hits.length && hits[0].distance <= maxDist) return c;
+      if (hits.length && hits[0].distance <= maxDist) {
+        // ✅ НОВОЕ: проверка — не открывать сквозь стены.
+        //    Если стена ближе чем сундук — блокируем взаимодействие.
+        if (buildingSystem && buildingSystem.group) {
+          const wallHits = ray.intersectObjects(buildingSystem.group.children, true);
+          if (wallHits.length && wallHits[0].distance < hits[0].distance - 0.1) {
+            return null;   // стена между игроком и сундуком
+          }
+        }
+        return c;
+      }
     }
     return null;
   }
@@ -197,12 +221,12 @@ const CSS = `
 .storage-grid{display:grid;grid-template-columns:repeat(6,52px);gap:3px;background:#1e1e1e;padding:8px;border-radius:2px;border:1px solid #111}
 .storage-slot{width:52px;height:52px;background:#3a3a3a;border:1px solid #1a1a1a;border-radius:2px;position:relative;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .storage-slot:hover{background:#454545;border-color:#555}
-.storage-slot img{width:36px;height:36px;object-fit:contain;pointer-events:none;user-select:none}
-.storage-slot .count{position:absolute;right:3px;bottom:1px;color:#fff;text-shadow:1px 1px 0 #000;font-size:11px;font-weight:800;pointer-events:none}
+.storage-slot img{width:40px;height:40px;object-fit:contain;pointer-events:none;user-select:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}
+.storage-slot .count{position:absolute;right:3px;bottom:1px;color:#fff;text-shadow:1px 1px 0 #000;font-size:11px;font-weight:800;pointer-events:none;z-index:5}
 .storage-close-hint{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,.4);font-size:10px;letter-spacing:.1em;pointer-events:none}
 `;
 
-let storagePanelEl = null, storageGridEl = null, invGridEl2 = null;
+let storagePanelEl = null, storageGridEl = null, invGridEl2 = null, hotbarGridEl2 = null;
 let activeChestData = null, playerInv = null, isStorageOpen = false;
 let lastOpenTime = 0;  // ✅ timestamp последнего openStorageMenu — для защиты от
                        //    немедленного закрытия на том же keydown event'е
@@ -217,20 +241,23 @@ function ensurePanel() {
   storagePanelEl = document.createElement("div");
   storagePanelEl.className = "storage-overlay";
   storagePanelEl.innerHTML = `<div class="storage-panel">
-    <button class="storage-close-btn" id="storageCloseBtn">✕</button>
+    <button class="storage-close-btn" id="storageCloseBtn">X</button>
     <div class="storage-col">
-      <div class="storage-title">📦 LARGE WOODEN BOX</div>
+      <div class="storage-title">СУНДУК</div>
       <div class="storage-grid" id="storageChestGrid"></div>
     </div>
     <div class="storage-col">
-      <div class="storage-title">INVENTORY</div>
+      <div class="storage-title">ИНВЕНТАРЬ</div>
       <div class="storage-grid" id="storageInvGrid"></div>
+      <div class="storage-title" style="margin-top:8px">HOTBAR</div>
+      <div class="storage-grid" id="storageHotbarGrid"></div>
     </div>
   </div>
   <div class="storage-close-hint">F / ESC — закрыть</div>`;
   document.body.appendChild(storagePanelEl);
   storageGridEl = storagePanelEl.querySelector("#storageChestGrid");
   invGridEl2 = storagePanelEl.querySelector("#storageInvGrid");
+  hotbarGridEl2 = storagePanelEl.querySelector("#storageHotbarGrid");
   storagePanelEl.querySelector("#storageCloseBtn").addEventListener("click", () => closeStorageMenu());
 }
 
@@ -240,21 +267,20 @@ function renderSlotS(container, item, index, source) {
   el.dataset.index = index;
   el.dataset.source = source;
   if (item) {
-    const def = ITEMS[item.id];
-    if (def?.icon && typeof def.icon === 'string' && def.icon.includes('.')) {
+    // ✅ ИСПРАВЛЕНО: поддерживаем ОБЕ структуры слотов:
+    //    chest:  { id: 'wood', count: 50 }
+    //    inv:    { item: ITEMS.wood, count: 50 }
+    const itemId = item.id || (item.item && item.item.id);
+    const count = item.count || 0;
+    const def = itemId ? ITEMS[itemId] : null;
+    if (def && def.icon) {
       const img = document.createElement("img");
       img.src = def.icon; img.draggable = false;
       el.appendChild(img);
-    } else if (def) {
-      const emoji = def.emoji || def.icon || '📦';
-      const d = document.createElement("div");
-      d.style.cssText = `font-size:28px;`;
-      d.textContent = emoji;
-      el.appendChild(d);
     }
-    if (item.count > 1) {
+    if (count > 1) {
       const c = document.createElement("div");
-      c.className = "count"; c.textContent = item.count;
+      c.className = "count"; c.textContent = count;
       el.appendChild(c);
     }
     el.addEventListener("mousedown", (e) => {
@@ -275,14 +301,19 @@ function renderStorageUI() {
   if (!activeChestData || !playerInv) return;
   storageGridEl.innerHTML = "";
   invGridEl2.innerHTML = "";
-  for (let i = 0; i < 24; i++) renderSlotS(storageGridEl, activeChestData.slots[i], i, "chest");
-  // ✅ ИСПРАВЛЕНО: показываем слоты 0..5 хотбара + слоты 6..29 инвентаря
-  for (let i = 0; i < 6; i++) {
-    renderSlotS(invGridEl2, playerInv.slots[i], i, "hotbar");
-  }
+  if (hotbarGridEl2) hotbarGridEl2.innerHTML = "";
+  // ✅ Сундук: 18 слотов (3 ряда) — как инвентарь
+  for (let i = 0; i < 18; i++) renderSlotS(storageGridEl, activeChestData.slots[i], i, "chest");
+  // ✅ Инвентарь: слоты 6..23 (18 слотов, 3 ряда)
   for (let i = 0; i < 18; i++) {
     const invSlotIndex = 6 + i;
     renderSlotS(invGridEl2, playerInv.slots[invSlotIndex], invSlotIndex, "inv");
+  }
+  // ✅ HOTBAR: слоты 0..5 (6 слотов, 1 ряд) — в отдельной секции
+  if (hotbarGridEl2) {
+    for (let i = 0; i < 6; i++) {
+      renderSlotS(hotbarGridEl2, playerInv.slots[i], i, "hotbar");
+    }
   }
 }
 
@@ -313,13 +344,27 @@ const getArr = (src, idx) => {
       
       const item = from.arr[from.idx];
       if (item) {
-        const stack = ITEMS[item.id]?.stack || 64;
+        // ✅ ИСПРАВЛЕНО: извлекаем id из ОБЕИХ структур слотов
+        //    chest: { id, count }   inv: { item: ITEMS.xxx, count }
+        const itemId = item.id || (item.item && item.item.id);
+        if (!itemId) { dragData2 = null; if (dragGhost2) { dragGhost2.remove(); dragGhost2 = null; } return; }
+        const stack = (ITEMS[itemId]?.stack) || 64;
         const existing = to.arr[to.idx];
-        if (!existing || (existing.id === item.id && existing.count < stack)) {
+        const existingId = existing ? (existing.id || (existing.item && existing.item.id)) : null;
+        if (!existing || (existingId === itemId && (existing.count || 0) < stack)) {
           const canMove = Math.min(item.count, stack - (existing?.count || 0));
           if (canMove > 0) {
-            if (existing) existing.count += canMove;
-            else to.arr[to.idx] = { id: item.id, count: canMove };
+            if (existing) {
+              existing.count += canMove;
+            } else {
+              // ✅ При создании нового слота в сундуке — используем { id, count }
+              //    При создании в инвентаре — используем { item, count }
+              if (targetSource === "chest") {
+                to.arr[to.idx] = { id: itemId, count: canMove };
+              } else {
+                to.arr[to.idx] = { item: ITEMS[itemId], count: canMove };
+              }
+            }
             item.count -= canMove;
             if (item.count <= 0) from.arr[from.idx] = null;
             
@@ -330,6 +375,9 @@ const getArr = (src, idx) => {
               }
             }
             renderStorageUI();
+            // ✅ НОВОЕ: обновляем инвентарь и хотбар после перемещения
+            if (playerInv && playerInv.isOpen) playerInv.render();
+            if (playerInv && playerInv.hotbar) playerInv.hotbar.render();
             if (window.hudRef) window.hudRef.updateInventoryUI(playerInv);
           }
         }
@@ -394,7 +442,10 @@ export function closeStorageMenu() {
   //    остаётся свободным и игрок не может продолжить игру без лишнего клика.
   //    Helper проверит, что других меню нет, и безопасно вызовет controls.lock().
   if (typeof window.__requestPointerLock === 'function') {
-    window.__requestPointerLock();
+    // ✅ Задержка 100мс — браузер требует паузу после exitPointerLock
+    setTimeout(() => {
+      if (!isStorageOpen) window.__requestPointerLock();
+    }, 100);
   }
 }
 

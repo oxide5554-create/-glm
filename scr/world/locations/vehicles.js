@@ -366,18 +366,32 @@ export function createTruck(opts = {}) {
   const b1 = createBreakableBarrel(cols[0]);
   b1.position.set(-0.72, 1.25, -0.35);
   b1.rotation.y = rn(0, Math.PI * 2);
+  // ✅ НОВОЕ: тег бочки — скрап при разрушении падает на пол кузова (Y=1.25),
+  //    а не сквозь пол на землю. truckGroup ссылается на group грузовика.
+  b1.userData.dropOnTruckBed = true;
+  b1.userData.truckGroup = group;
+  b1.userData.bedFloorLocalY = 1.25;
   group.add(b1);
   const b2 = createBreakableBarrel(cols[1]);
   b2.position.set(0.15, 1.25, -0.5);
   b2.rotation.y = rn(0, Math.PI * 2);
+  b2.userData.dropOnTruckBed = true;
+  b2.userData.truckGroup = group;
+  b2.userData.bedFloorLocalY = 1.25;
   group.add(b2);
   const b3 = createBreakableBarrel(cols[2]);
   b3.position.y = -0.44;
+  b3.userData.dropOnTruckBed = true;
+  b3.userData.truckGroup = group;
+  b3.userData.bedFloorLocalY = 1.25;
   const lay3 = new THREE.Group(); lay3.add(b3); lay3.rotation.z = Math.PI / 2; lay3.position.y = 0.29;
   const h3 = new THREE.Group(); h3.add(lay3); h3.rotation.y = rn(-0.2, 0.2); h3.position.set(0.05, 1.25, -1.6);
   group.add(h3);
   const b4 = createBreakableBarrel(cols[3]);
   b4.position.y = -0.44;
+  b4.userData.dropOnTruckBed = true;
+  b4.userData.truckGroup = group;
+  b4.userData.bedFloorLocalY = 1.25;
   const lay4 = new THREE.Group(); lay4.add(b4); lay4.rotation.z = Math.PI / 2; lay4.position.y = 0.29;
   const h4 = new THREE.Group(); h4.add(lay4); h4.rotation.y = Math.PI / 2 + rn(-0.15, 0.15); h4.position.set(0.74, 1.25, -2.25);
   group.add(h4);
@@ -403,7 +417,19 @@ export function createTruck(opts = {}) {
     { x: -1.15, z: -1.5, hx: 0.09, hz: 2.2, bottom: 1.25, top: 2.25 },
     { x: 1.15, z: -1.5, hx: 0.09, hz: 2.2, bottom: 1.25, top: 2.25 },
     { x: 0, z: 0.7, hx: 1.15, hz: 0.09, bottom: 1.25, top: 2.75 },
-    { x: 0, z: -3.72, hx: 1.15, hz: 0.08, bottom: 1.25, top: 2.2, requireClosed: 'tailgate' }
+    // ✅ УБРАН tailgate collider — откидной борт визуально уже открыт
+    //    (rotation=-1.45 ≈ -83°, почти горизонтальный). Раньше вертикальный
+    //    коллайдер (Y=1.25–2.20) блокировал вход в кузов сзади. Теперь игрок
+    //    может войти в кузов после подъёма по лесенке.
+    // ✅ ЛЕСЕНКА на задней части — УЗКАЯ (hx=0.4), только по центру.
+    //    Игрок подходит строго сзади по центру (x∈[-0.4, 0.4]) — шагает по
+    //    3 степам (≤0.6м = stepUp), затем прыгает через стены кузова.
+    //    Узкая ширина → не задевает игрока, идущего сбоку грузовика.
+    { x: 0, z: -4.30, hx: 0.40, hz: 0.15, bottom: 0.0, top: 0.45 },   // step 1 (низ)
+    { x: 0, z: -4.10, hx: 0.40, hz: 0.15, bottom: 0.0, top: 0.95 },   // step 2 (середина)
+    { x: 0, z: -3.90, hx: 0.40, hz: 0.10, bottom: 0.0, top: 1.30 },   // step 3 (верх)
+    // ✅ ПОЛ КУЗОВА как коллайдер — чтобы игрок СТОЯЛ в кузове после запрыгивания.
+    { x: 0, z: -1.5, hx: 1.10, hz: 2.10, bottom: 1.20, top: 1.25 },   // пол кузова
   ];
 
   // ✅ НОВОЕ: хитбоксы сидений для грузовика

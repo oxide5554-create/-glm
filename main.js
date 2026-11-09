@@ -40,6 +40,8 @@ import { createBuilding } from './scr/world/building.js';
 import { BearManager, BEAR_SETTINGS } from './scr/world/bear.js';
 import { CrateManager } from './scr/world/crates.js';
 import { createStorageWorld, openStorageMenu, closeStorageMenu, isStorageMenuOpen } from './scr/world/storage.js';
+// ✅ НОВОЕ: печка (размещение + UI + плавка + огонь/дым + звук)
+import { createFurnaceWorld, openFurnaceUI, closeFurnaceUI, isFurnaceMenuOpen, initFurnaceUI, tickFurnaceUI, preloadFurnaceModel, preloadFurnaceSound, setSoundManagerPlay } from './scr/world/furnace.js';
 
 // ✅ ПОСТ-ОБРАБОТКА (кинематографичная картинка)
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -172,6 +174,112 @@ for (let i = 0; i < 25; i++) {
     stone.userData.id = 'stone_' + i;
     scene.add(stone); colliders.push(stone);
     registerCull(stone, 120, 'stone');
+}
+
+// ============================================================================
+// ✅ НОВОЕ: РУДНЫЕ МЕСТОРОЖДЕНИЯ — серная руда (жёлтые пятна) и железная руда
+//    (оранжево-серые пятна). Ломаются киркой.
+//    ✅ ИЗМЕНЕНО: нормальные формы (кластер из 2-3 камней, не один dodecahedron).
+//    ✅ ИЗМЕНЕНО: пятна на поверхности (плоские CircleGeometry), не маленькие сферы.
+//    ✅ Железная руда: 1-3 iron_ore за удар, макс ~30 (health=15).
+//    ✅ Серная руда: 2 sulfur_ore за удар, макс ~20 (health=10).
+// ============================================================================
+function createOreDepositMesh(type) {
+    const isSulfur = type === 'sulfur';
+    const group = new THREE.Group();
+    // ✅ Кластер из 2-3 камней разного размера — нормальная форма, не один куб
+    const baseColor = isSulfur ? 0x6a6a5a : 0x4a4038;
+    const mat = new THREE.MeshStandardMaterial({
+        color: baseColor, roughness: 0.95, metalness: 0.1, flatShading: true,
+    });
+    const nRocks = 2 + Math.floor(Math.random() * 2);   // 2-3 камня
+    for (let r = 0; r < nRocks; r++) {
+        const size = 0.5 + Math.random() * 0.4;
+        // ✅ IcosahedronGeometry с detail=1 — более округлая форма
+        const geo = new THREE.IcosahedronGeometry(size, 1);
+        // Деформируем вершины для естественности
+        const pos = geo.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+            const noise = 0.85 + Math.random() * 0.3;
+            pos.setXYZ(i, pos.getX(i) * noise, pos.getY(i) * noise, pos.getZ(i) * noise);
+        }
+        geo.computeVertexNormals();
+        const rock = new THREE.Mesh(geo, mat);
+        rock.position.set(
+            (Math.random() - 0.5) * 0.5,
+            r * 0.2,
+            (Math.random() - 0.5) * 0.5
+        );
+        rock.rotation.set(Math.random(), Math.random(), Math.random());
+        rock.castShadow = true; rock.receiveShadow = true;
+        group.add(rock);
+    }
+    // ✅ Пятна на поверхности — плоские CircleGeometry (не сферы)
+    //    Сера: жёлтые пятна. Железо: оранжево-серые пятна.
+    const spotColors = isSulfur
+        ? [0xffd040, 0xeec020, 0xd4a010]           // жёлтые оттенки
+        : [0xc05020, 0x8a4010, 0x6a5040];            // оранжевые + серо-коричневые
+    const N_SPOTS = 14;
+    for (let i = 0; i < N_SPOTS; i++) {
+        const spotColor = spotColors[i % spotColors.length];
+        const spotMat = new THREE.MeshStandardMaterial({
+            color: spotColor, roughness: 0.6, metalness: 0.2,
+            emissive: spotColor, emissiveIntensity: 0.1,
+            side: THREE.DoubleSide,
+        });
+        // ✅ Плоское пятно (CircleGeometry) на поверхности
+        const spotRadius = 0.08 + Math.random() * 0.10;
+        const spotGeo = new THREE.CircleGeometry(spotRadius, 8);
+        const spot = new THREE.Mesh(spotGeo, spotMat);
+        // Случайное направление от центра
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        const r = 0.75;
+        spot.position.set(
+            r * Math.sin(phi) * Math.cos(theta),
+            r * Math.cos(phi),
+            r * Math.sin(phi) * Math.sin(theta)
+        );
+        // Ориентируем пятно перпендикулярно нормали (от центра)
+        spot.lookAt(0, 0, 0);
+        spot.castShadow = false;
+        group.add(spot);
+    }
+    return group;
+}
+
+// ✅ Спавн рудных месторождений: 8 серы + 8 железа (разбросаны по карте)
+//    ✅ Железная глыба: health=15, даёт 1-3 iron_ore за удар (макс ~30).
+//    ✅ Серная глыба: health=10, даёт 2 sulfur_ore за удар (макс ~20).
+for (let i = 0; i < 8; i++) {
+    const sx = (Math.random() - 0.5) * 380;
+    const sz = (Math.random() - 0.5) * 380;
+    if (Math.hypot(sx, sz) < 25) continue;
+    const sy = getGroundHeight(sx, sz);
+    const ore = createOreDepositMesh('sulfur');
+    ore.scale.setScalar(0.9 + Math.random() * 0.6);
+    ore.position.set(sx, sy + 0.3, sz);
+    ore.rotation.set(Math.random(), Math.random(), Math.random());
+    ore.userData.isSulfurOre = true;
+    ore.userData.health = 10; ore.userData.maxHealth = 10;   // ✅ 10 ударов × 2 = 20 серы макс
+    ore.userData.id = 'sulfur_ore_' + i;
+    scene.add(ore); colliders.push(ore);
+    registerCull(ore, 120, 'sulfur_ore');
+}
+for (let i = 0; i < 8; i++) {
+    const sx = (Math.random() - 0.5) * 380;
+    const sz = (Math.random() - 0.5) * 380;
+    if (Math.hypot(sx, sz) < 25) continue;
+    const sy = getGroundHeight(sx, sz);
+    const ore = createOreDepositMesh('iron');
+    ore.scale.setScalar(0.9 + Math.random() * 0.6);
+    ore.position.set(sx, sy + 0.3, sz);
+    ore.rotation.set(Math.random(), Math.random(), Math.random());
+    ore.userData.isIronOre = true;
+    ore.userData.health = 15; ore.userData.maxHealth = 15;   // ✅ 15 ударов × 1-3 = ~30 железа макс
+    ore.userData.id = 'iron_ore_' + i;
+    scene.add(ore); colliders.push(ore);
+    registerCull(ore, 120, 'iron_ore');
 }
 
 // ============================================================================
@@ -599,6 +707,13 @@ const buggyDriverCtl = buggyControllers[0] || null;
 const buildingSystem = createBuilding(scene, ground, getGroundHeight);
 const storageWorld = createStorageWorld(scene, getGroundHeight, buildingSystem);
 
+// ✅ НОВОЕ: создаём мир печек. Звуковой менеджер будет подключен позже.
+//    Предзагружаем GLB-модель печки и звук плавки.
+//    ✅ ФИКС: initFurnaceUI(inventory) перенесён ПОСЛЕ создания inventory
+//    (была ошибка TDZ: Cannot access 'inventory' before initialization).
+let furnaceWorld = null;
+const _furnaceWorldReady = preloadFurnaceModel().catch(() => { /* fallback сработает */ });
+
 // ✅ Найти контроллер багги по объекту багги
 function findBuggyController(buggyObj) {
     if (!buggyObj) return null;
@@ -615,6 +730,11 @@ sound.load('treeFall', './sounds/wood/BigTreeFalling_03.ogg');
 sound.load('stoneHit1', './sounds/stone/Stone Hit 01.wav');
 sound.load('stoneBreak', './sounds/stone/StoneBreak_01.ogg');
 sound.load('barrelBreak', './sounds/boch/BarrelBreak_02.ogg');
+
+// ✅ НОВОЕ: создаём мир печек (нужен sound manager для звука плавки)
+furnaceWorld = createFurnaceWorld(scene, getGroundHeight, buildingSystem, sound);
+setSoundManagerPlay((name, opts) => sound.play(name, opts));
+preloadFurnaceSound(sound);
 sound.load('metalHit', './sounds/boch/Metal Hit 01.wav');
 // ✅ Звук выстрела АК-47
 sound.load('akShot', './sounds/AssaultRifle_Shot_Tail_01.wav');
@@ -698,6 +818,8 @@ function showToast(text) {
 //    Показывает иконку предмета и "+count", всплывает вверх и исчезает.
 //    itemId — id предмета из ITEMS (wood, stone, scrap, rawMeat, bone, etc.)
 //    count — количество
+// ✅ ИЗМЕНЕНО: мелкий текст, БЕЗ чёрного фона, просто иконка + количество.
+//    Тёмная обводка-text-shadow обеспечивает читаемость на любом фоне.
 let _popupOffset = 0;
 function showFloatingPickup(itemId, count) {
     const item = ITEMS[itemId];
@@ -706,36 +828,37 @@ function showFloatingPickup(itemId, count) {
     // Случайное смещение по горизонтали чтобы popup'ы не накладывались
     const rx = (Math.random() - 0.5) * 120;
     const ry = _popupOffset;
-    _popupOffset = (_popupOffset - 40) % 120;   // следующий popup чуть выше
+    _popupOffset = (_popupOffset - 30) % 90;   // следующий popup чуть выше
+    // ✅ БЕЗ фона, БЕЗ рамки. Только text-shadow для читаемости.
     el.style.cssText = `
         position: fixed; left: 50%; top: 45%;
         margin-left: ${rx}px; margin-top: ${ry}px;
-        display: flex; align-items: center; gap: 6px;
-        background: rgba(0, 0, 0, 0.75);
-        padding: 6px 14px; border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.15);
+        display: flex; align-items: center; gap: 3px;
+        background: transparent;
+        padding: 0; border: none;
         pointer-events: none; z-index: 150;
         font-family: 'Segoe UI', Arial, sans-serif;
-        font-weight: 800; font-size: 20px; color: #fff;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.9);
+        font-weight: 700; font-size: 13px; color: #fff;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.9), -1px 0 1px rgba(0,0,0,0.9), 1px 0 1px rgba(0,0,0,0.9);
         transition: opacity 1.1s ease-out, transform 1.1s ease-out;
         transform: translateY(0) scale(0.8);
         opacity: 0;
     `;
-    el.innerHTML = `<img src="${item.icon}" style="width:32px;height:32px;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.8))" onerror="this.style.display='none'">` +
-                   `<span style="color:#7fd97f">+${count}</span>`;
+    // ✅ Мелкая иконка (20px) + число. Без фоновой плашки.
+    el.innerHTML = `<img src="${item.icon}" style="width:20px;height:20px;object-fit:contain;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.95))" onerror="this.style.display='none'">` +
+                   `<span style="color:#9fe69f;text-shadow:0 1px 2px rgba(0,0,0,0.95),0 0 4px rgba(0,0,0,0.9)">+${count}</span>`;
     document.body.appendChild(el);
     // Анимация: появление + всплытие вверх + затухание
     requestAnimationFrame(() => {
         el.style.opacity = '1';
-        el.style.transform = 'translateY(-90px) scale(1)';
+        el.style.transform = 'translateY(-70px) scale(1)';
     });
     setTimeout(() => {
         el.style.opacity = '0';
     }, 600);
     setTimeout(() => {
         if (el.parentNode) el.remove();
-        if (_popupOffset === -40) _popupOffset = 0;   // сброс если последний
+        if (_popupOffset === -30) _popupOffset = 0;   // сброс если последний
     }, 1200);
 }
 
@@ -835,6 +958,7 @@ window.__initialPlayerVisible = false;
 
 window.buildMode = false;
 window.storageMode = false;
+window.furnaceMode = false;   // ✅ НОВОЕ: режим размещения печки
 window.doorMode = false;
 window.lockMode = false;
 
@@ -847,9 +971,11 @@ function hideAllWeapons() {
 function resetBuildModes() {
     window.buildMode = false;
     window.storageMode = false;
+    window.furnaceMode = false;   // ✅ НОВОЕ
     window.doorMode = false;
     window.lockMode = false;
     storageWorld.hideGhost();
+    if (furnaceWorld) furnaceWorld.hideGhost();   // ✅ НОВОЕ
     buildingSystem.hideDoorGhost();
     buildingSystem.hideLockGhost();
 }
@@ -875,6 +1001,15 @@ function checkActiveWeapon() {
         resetBuildModes();
         window.storageMode = true;
         storageWorld.showGhost();
+        fpPlayer.setWeapon('none');
+        return;
+    }
+    // ✅ НОВОЕ: печка — размещается как сундук (ghost + terrain follow)
+    if (item.id === 'furnace') {
+        currentWeapon = 'furnace';
+        resetBuildModes();
+        window.furnaceMode = true;
+        if (furnaceWorld) furnaceWorld.showGhost();
         fpPlayer.setWeapon('none');
         return;
     }
@@ -918,11 +1053,16 @@ const hotbar = new Hotbar(inventory, (item, index) => { checkActiveWeapon(); });
 inventory.hotbar = hotbar;
 window.inventory = inventory;
 window.__inventoryRef = inventory;
+// ✅ НОВОЕ: инициализируем UI печки (нужен inventory для drag-and-drop).
+//    Раньше вызывалось раньше создания inventory → ошибка TDZ.
+initFurnaceUI(inventory);
 
-// ✅ Стартовые патроны (предметы уже расставлены в inventory.js)
-window.__akAmmo = AK_MAG_SIZE;
-window.__berdanaAmmo = BERDANA_MAG_SIZE;
-window.__shotgunAmmo = SHOTGUN_MAG_SIZE;   // ✅ НОВОЕ: дробовик, 2 патрона
+// ✅ ИЗМЕНЕНО: стартовые патроны = 0. Патроны теперь крафтятся в крафт-меню
+//    (винтовочный патрон — 10 пороха + 5 железа → 10 шт; дробовик — 2 пороха + 5 фрагментов → 4 шт).
+//    Перезарядка (R) берёт патроны из инвентаря.
+window.__akAmmo = 0;
+window.__berdanaAmmo = 0;
+window.__shotgunAmmo = 0;
 // ✅ Несколько попыток render хотбара — чтобы точно отрисовался после загрузки DOM
 setTimeout(() => { hotbar.render(); inventory.render && inventory.render(); }, 50);
 setTimeout(() => { hotbar.render(); }, 200);
@@ -933,7 +1073,20 @@ console.log('[Hotbar] Инвентарь (6+):', inventory.slots.slice(6, 12).ma
 const craftMenu = createCraftMenu(document.body, inventory, {
     onCrafted: (id, count) => { showToast(`✅ Создано: ${id} x${count}`); },
     onHint: (msg) => showToast(msg),
-    onToggle: (isOpen) => {}
+    onToggle: (isOpen) => {
+        // ✅ НОВОЕ: скрываем нижний хотбар при открытии крафт-панели
+        const hb = document.getElementById("hotbar");
+        if (hb) hb.style.display = isOpen ? "none" : "";
+        // ✅ НОВОЕ: взаимное закрытие — если открываем крафт, закрываем инвентарь
+        if (isOpen && inventory.isOpen) inventory.close();
+    }
+});
+
+// ✅ НОВОЕ: взаимное закрытие — при открытии инвентаря (KeyE) закрываем крафт.
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyE' && craftMenu && craftMenu.isOpen()) {
+        craftMenu.close();
+    }
 });
 
 // ✅ НОВОЕ: Карта мира — открывается клавишей M.
@@ -992,7 +1145,7 @@ controls.addEventListener('lock', () => {
 });
 controls.addEventListener('unlock', () => {
     // ✅ НЕ показываем overlay если открыто меню (инвентарь/ящик/крафт/сундук/настройки)
-    const anyMenuOpen = inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()
+    const anyMenuOpen = inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen() || isFurnaceMenuOpen()
         || (settingsUI && settingsUI.isOpen()) || (window.__craftOpen);
     if (!anyMenuOpen) overlay.style.display = 'flex';
     player.enabled = false;
@@ -1014,7 +1167,7 @@ controls.addEventListener('unlock', () => {
 window.__requestPointerLock = function () {
     if (document.pointerLockElement) return;  // уже захвачен
     // Если какое-то меню ещё открыто — не захватываем курсор
-    const anyMenuOpen = inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()
+    const anyMenuOpen = inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen() || isFurnaceMenuOpen()
         || (settingsUI && settingsUI.isOpen()) || (window.__craftOpen);
     if (anyMenuOpen) return;
     try { controls.lock(); } catch (e) { /* ignore */ }
@@ -1085,68 +1238,138 @@ function hitStone(stoneMesh) {
     const stone = 2 + Math.floor(Math.random() * 2);   // 2 или 3
     inventory.addItem('stone', stone);
     showFloatingPickup('stone', stone);   // ✅ иконка + цифра
+    // ✅ УБРАНО: 20% дроп sulfur_ore с обычных камней.
+    //    Серная руда теперь добывается ТОЛЬКО из рудных месторождений (жёлтые пятна).
     if (ud.health <= 0) {
         scene.remove(stoneMesh); const idx = colliders.indexOf(stoneMesh); if (idx > -1) colliders.splice(idx, 1);
         sound.play('stoneBreak', { volume: 1.0 });
         // ✅ Без бонуса при разрушении — весь камень уже получен за удары (≈50)
     }
 }
+
+// ✅ НОВОЕ: добыча серной руды из рудного месторождения (жёлтые пятна)
+//    Даёт 2 sulfur_ore за удар, макс ~20 (health=10).
+function findSulfurOre(obj) { let cur = obj; while (cur) { if (cur.userData && cur.userData.isSulfurOre) return cur; cur = cur.parent; } return null; }
+function hitSulfurOre(oreMesh) {
+    const ud = oreMesh.userData;
+    if (ud.health <= 0) return;
+    ud.health--;
+    oreMesh.rotation.x += (Math.random() - 0.5) * 0.12;
+    sound.play('stoneHit1', { volume: 0.9 });
+    // ✅ 2 серной руды за удар (всего ~20 с месторождения)
+    const n = 2;
+    inventory.addItem('sulfur_ore', n);
+    showFloatingPickup('sulfur_ore', n);
+    if (ud.health <= 0) {
+        scene.remove(oreMesh);
+        const idx = colliders.indexOf(oreMesh); if (idx > -1) colliders.splice(idx, 1);
+        sound.play('stoneBreak', { volume: 1.0 });
+    }
+}
+
+// ✅ НОВОЕ: добыча железной руды из рудного месторождения (оранжево-серые пятна)
+//    Даёт 1-3 iron_ore за удар, макс ~30 (health=15).
+function findIronOre(obj) { let cur = obj; while (cur) { if (cur.userData && cur.userData.isIronOre) return cur; cur = cur.parent; } return null; }
+function hitIronOre(oreMesh) {
+    const ud = oreMesh.userData;
+    if (ud.health <= 0) return;
+    ud.health--;
+    oreMesh.rotation.x += (Math.random() - 0.5) * 0.12;
+    sound.play('stoneHit1', { volume: 0.9 });
+    // ✅ 1-3 железной руды за удар (всего ~30 с месторождения)
+    const n = 1 + Math.floor(Math.random() * 3);   // 1, 2 или 3
+    inventory.addItem('iron_ore', n);
+    showFloatingPickup('iron_ore', n);
+    if (ud.health <= 0) {
+        scene.remove(oreMesh);
+        const idx = colliders.indexOf(oreMesh); if (idx > -1) colliders.splice(idx, 1);
+        sound.play('stoneBreak', { volume: 1.0 });
+    }
+}
 // ✅ Удар инструментом (топор → деревьям, кирка → камням).
-// Урон наносится СРАЗУ при клике. Кулдаун 0.5 сек между ударами.
+// ✅ ИЗМЕНЕНО: Урон наносится ПОСЛЕ анимации удара (на hit-frame),
+//    не сразу при клике. Кулдаун = полная длительность анимации —
+//    нельзя ударить пока анимация не прошла.
+// ✅ ИЗМЕНЕНО: Бочки проверяются по ВСЕМ hits (как у оружия), не только
+//    по первому — бочка в грузовике за стенкой теперь ломается топором/киркой.
+const TOOL_ANIM_DURATION = 0.55;   // полная длительность анимации удара (сек)
+const TOOL_HIT_FRAME     = 0.18;   // момент hit-frame в анимации (сек)
 function hitWithTool() {
     if (toolCooldown > 0) return;
-    toolCooldown = 0.5;
+    // ✅ Кулдаун = полная анимация — нельзя ударить пока анимация не прошла
+    toolCooldown = TOOL_ANIM_DURATION;
 
     if (!window.__swingCounter) window.__swingCounter = 0;
     const swingType = (window.__swingCounter++ % 2 === 0) ? 'atk1' : 'atk2';
     fpPlayer.triggerSwing(swingType);
     sound.play('chop1', { volume: 0.4 });
 
-    const hit = getHit();
-    if (!hit || hit.distance >= 3.5) return;
+    // ✅ Hit detection ОТЛОЖЕН до hit-frame анимации (не сразу при клике)
+    setTimeout(() => {
+        // ✅ Берём ВСЕ пересечения в радиусе 3.5м (отсортированы по дистанции)
+        raycaster.setFromCamera(screenCenter, camera);
+        raycaster.far = 3.5;
+        const intersects = raycaster.intersectObjects(colliders, true);
+        if (intersects.length === 0) return;
 
-    const bear = findBear(hit.object);
-    if (bear) {
-        if (bear.dead) {
-            const drops = bear.harvest({ playerPos: camera.position });
-            if (drops) {
-                // ✅ НОВОЕ: floating popup для каждого ресурса из медведя
-                for (const itemId in drops) {
-                    inventory.addItem(itemId, drops[itemId]);
-                    showFloatingPickup(itemId, drops[itemId]);
+        const firstHit = intersects[0];
+
+        // === 1. Медведь — по первому hit (как раньше) ===
+        const bear = findBear(firstHit.object);
+        if (bear) {
+            if (bear.dead) {
+                const drops = bear.harvest({ playerPos: camera.position });
+                if (drops) {
+                    for (const itemId in drops) {
+                        inventory.addItem(itemId, drops[itemId]);
+                        showFloatingPickup(itemId, drops[itemId]);
+                    }
                 }
+            } else {
+                bear.damage(45, { playerPos: camera.position });
             }
-        } else {
-            bear.damage(45, { playerPos: camera.position });
+            return;
         }
-        return;
-    }
-    // ✅ Бочки ломаемые — любой инструмент (топор/кирка) может ударить
-    const barrel = findBarrel(hit.object);
-    if (barrel) { hitBarrel(barrel); return; }
-    // ✅ Топор → только деревья
-    if (currentWeapon === 'rock') {
-        const tree = findTree(hit.object);
-        if (tree) hitTree(tree);
-    }
-    // ✅ Кирка → только камни
-    else if (currentWeapon === 'stonePickaxe' || currentWeapon === 'concretePickaxe') {
-        const stone = findStone(hit.object);
-        if (stone) hitStone(stone);
-    }
+
+        // === 2. Деревья (rock) и камни/руда (pickaxe) — по первому hit ===
+        if (currentWeapon === 'rock') {
+            const tree = findTree(firstHit.object);
+            if (tree) { hitTree(tree); return; }
+        }
+        else if (currentWeapon === 'stonePickaxe' || currentWeapon === 'concretePickaxe') {
+            // ✅ НОВОЕ: сначала проверяем рудные месторождения (сера/железо)
+            const sulfurOre = findSulfurOre(firstHit.object);
+            if (sulfurOre) { hitSulfurOre(sulfurOre); return; }
+            const ironOre = findIronOre(firstHit.object);
+            if (ironOre) { hitIronOre(ironOre); return; }
+            // Потом обычный камень
+            const stone = findStone(firstHit.object);
+            if (stone) { hitStone(stone); return; }
+        }
+
+        // === 3. Бочки — по ВСЕМ hits (бочка может быть за стенкой кузова) ===
+        //    Раньше проверялся только первый hit. Если бочка в грузовике за
+        //    стенкой — первый hit был стена, findBarrel возвращал null → бочка
+        //    не ломалась. Теперь проверяем все hits (как у оружия).
+        for (const h of intersects) {
+            const barrel = findBarrel(h.object);
+            if (barrel) { hitBarrel(barrel); return; }
+        }
+    }, TOOL_HIT_FRAME * 1000);
 }
 
 // ✅ Выстрел из АК-47 (используется и для одиночного, и для автоогня)
 function fireAK() {
     // ✅ НЕЛЬЗЯ СТРЕЛЯТЬ при беге
     if (player.keys && player.keys.sprint && player.isMoving) {
-        showToast('❌ Нельзя стрелять на бегу!');
+        showToast('Нельзя стрелять на бегу!');
         return;
     }
     fpPlayer.triggerShoot();
-    if (!window.__akAmmo) window.__akAmmo = AK_MAG_SIZE;
+    // ✅ ИЗМЕНЕНО: убран fallback на AK_MAG_SIZE. Патроны теперь крафтятся.
+    if (!window.__akAmmo) window.__akAmmo = 0;
     if (window.__akAmmo <= 0) {
-        showToast('🔫 Нет патронов! Нажми R чтобы перезарядить');
+        showToast('🔫 Нет патронов! Скрафти винтовочные патроны и нажми R');
         return;
     }
     window.__akAmmo--;
@@ -1191,13 +1414,14 @@ function fireAK() {
 function fireBerdana() {
     // ✅ НЕЛЬЗЯ СТРЕЛЯТЬ при беге
     if (player.keys && player.keys.sprint && player.isMoving) {
-        showToast('❌ Нельзя стрелять на бегу!');
+        showToast('Нельзя стрелять на бегу!');
         return;
     }
     fpPlayer.triggerShoot();
-    if (!window.__berdanaAmmo) window.__berdanaAmmo = BERDANA_MAG_SIZE;
+    // ✅ ИЗМЕНЕНО: убран fallback на BERDANA_MAG_SIZE. Патроны крафтятся.
+    if (!window.__berdanaAmmo) window.__berdanaAmmo = 0;
     if (window.__berdanaAmmo <= 0) {
-        showToast('🎯 Нет патронов! Нажми R чтобы перезарядить');
+        showToast('🎯 Нет патронов! Скрафти винтовочные патроны и нажми R');
         return;
     }
     window.__berdanaAmmo--;
@@ -1211,11 +1435,17 @@ function fireBerdana() {
     //    Это даёт ощущение "пинка" винтовки без увода камеры далеко вверх.
     recoilPitch += 0.010;                              // слабо вверх
     recoilYaw += (Math.random() - 0.5) * 0.006;        // минимальный случайный вбок
-    // ✅ РАЗБРОС пуль (берданка чуть точнее АК)
-    const spread = getCurrentSpread();
-    const spreadRad = (spread / 200) * 0.12;
-    const rx = (Math.random() - 0.5) * spreadRad;
-    const ry = (Math.random() - 0.5) * spreadRad;
+    // ✅ ИЗМЕНЕНО: РЕАЛЬНЫЙ РАЗБРОС пуль для берданки.
+    //    Раньше разброс зависел только от getCurrentSpread() — при покое
+    //    и без прицела spread мог быть ≈0 → пули летели идеально точно.
+    //    Теперь: минимальный базовый разброс 1.5° (как у реальной винтовки
+    //    с гладким стволом) + дополнительный от движения/прицела.
+    //    1.5° на 100м = отклонение ~2.6м — заметно, но не критично.
+    const baseSpreadDeg = 1.5;                                    // базовый разброс (градусы)
+    const moveSpreadDeg = (getCurrentSpread() / 200) * 1.0;      // дополнительно от прицела/движения (до ~1°)
+    const spreadRad = (baseSpreadDeg + moveSpreadDeg) * Math.PI / 180;
+    const rx = (Math.random() - 0.5) * spreadRad * 2;
+    const ry = (Math.random() - 0.5) * spreadRad * 2;
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
@@ -1240,13 +1470,14 @@ function fireBerdana() {
 function fireShotgun() {
     // ✅ НЕЛЬЗЯ СТРЕЛЯТЬ при беге
     if (player.keys && player.keys.sprint && player.isMoving) {
-        showToast('❌ Нельзя стрелять на бегу!');
+        showToast('Нельзя стрелять на бегу!');
         return;
     }
     fpPlayer.triggerShoot();
-    if (!window.__shotgunAmmo) window.__shotgunAmmo = SHOTGUN_MAG_SIZE;
+    // ✅ ИЗМЕНЕНО: убран fallback на SHOTGUN_MAG_SIZE. Патроны крафтятся.
+    if (!window.__shotgunAmmo) window.__shotgunAmmo = 0;
     if (window.__shotgunAmmo <= 0) {
-        showToast('🔫 Нет патронов! Нажми R чтобы перезарядить');
+        showToast('🔫 Нет патронов! Скрафти патроны дробовика и нажми R');
         return;
     }
     window.__shotgunAmmo--;
@@ -1336,16 +1567,85 @@ function breakBarrel(barrelMesh) {
     const debris = createBarrelDebris(scene, pos.x, pos.y + 0.4, pos.z, ud.barrelColor);
     if (!window.barrelDebris) window.barrelDebris = [];
     window.barrelDebris.push({ debris, life: 0, maxLife: 3.5, onGround: false });
-    const scrapData = spawnScrap(scene, pos.x, pos.y + 0.5, pos.z, getGroundHeight);
+    // ✅ НОВОЕ: если бочка в кузове грузовика (dropOnTruckBed) — скрап падает
+    //    на ПОЛ КУЗОВА, а не сквозь него на землю.
+    //    restY = мировая Y пола кузова = truckGroup.position.y + bedFloorLocalY
+    //    (грузовик стоит на terrainY, без вращения по X/Z — только по Y).
+    let restY = null;
+    if (ud.dropOnTruckBed && ud.truckGroup && typeof ud.bedFloorLocalY === 'number') {
+        restY = ud.truckGroup.position.y + ud.bedFloorLocalY;
+    }
+    const scrapData = spawnScrap(scene, pos.x, pos.y + 0.5, pos.z, getGroundHeight, restY);
     scrapData.id = 'scrap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
     if (!window.worldScraps) window.worldScraps = [];
     window.worldScraps.push(scrapData);
     for (const mesh of scrapData.meshes) colliders.push(mesh);
     // ✅ Убран showToast — вместо него floating popup при подборе скрапа (F)
+
+    // ✅ НОВОЕ: СОХРАНЯЕМ данные для респауна бочки через 7-18 минут.
+    //    Сохраняем: parent (куда прикрепить), локальную позицию/поворот,
+    //    цвет, и тег dropOnTruckBed (для бочек в кузове грузовика).
+    const respawnInfo = {
+        parent: barrelMesh.parent,
+        localPos: barrelMesh.position.clone(),
+        localQuat: barrelMesh.quaternion.clone(),
+        color: ud.barrelColor,
+        wasOnTruckBed: !!ud.dropOnTruckBed,
+        truckGroup: ud.truckGroup || null,
+        bedFloorLocalY: ud.bedFloorLocalY || null,
+    };
+
+    // Удаляем бочку из сцены и из коллайдеров
     const parent = barrelMesh.parent;
     if (parent) parent.remove(barrelMesh);
     const idx = colliders.indexOf(barrelMesh);
     if (idx > -1) colliders.splice(idx, 1);
+    // ✅ Также удаляем дочерние меши (GLB + невидимый хитбокс) из коллайдеров
+    barrelMesh.traverse(o => {
+        if (o.isMesh) {
+            const ci = colliders.indexOf(o);
+            if (ci > -1) colliders.splice(ci, 1);
+        }
+    });
+
+    // ✅ НОВОЕ: РЕСПАУН через 7-18 минут (рандомно)
+    //    Воссоздаём бочку с теми же параметрами, добавляем в тот же parent.
+    const respawnMinutes = 7 + Math.random() * 11;   // 7-18 минут
+    const respawnMs = Math.round(respawnMinutes * 60 * 1000);
+    setTimeout(() => {
+        try {
+            const newBarrel = createBreakableBarrel(respawnInfo.color);
+            newBarrel.position.copy(respawnInfo.localPos);
+            newBarrel.quaternion.copy(respawnInfo.localQuat);
+            // Восстанавливаем тег кузова грузовика
+            if (respawnInfo.wasOnTruckBed && respawnInfo.truckGroup) {
+                newBarrel.userData.dropOnTruckBed = true;
+                newBarrel.userData.truckGroup = respawnInfo.truckGroup;
+                newBarrel.userData.bedFloorLocalY = respawnInfo.bedFloorLocalY;
+            }
+            // Добавляем в тот же parent (truck group / checkblock group / scene)
+            if (respawnInfo.parent) respawnInfo.parent.add(newBarrel);
+            else scene.add(newBarrel);
+            // Регистрируем в коллайдерах: group + дочерние меши (GLB + хитбокс)
+            colliders.push(newBarrel);
+            newBarrel.traverse(o => {
+                if (o.isMesh && colliders.indexOf(o) === -1) colliders.push(o);
+            });
+            // ✅ Для одиночных бочек в мире (без parent или parent=scene) — culling
+            if (window.__registerCull && (!respawnInfo.parent || respawnInfo.parent === scene)) {
+                window.__registerCull(newBarrel, 200, 'barrel');
+            }
+            // Деликатный звук респауна (чтобы игрок заметил)
+            if (respawnInfo.parent) {
+                const wpos = newBarrel.getWorldPosition(new THREE.Vector3());
+                if (Math.hypot(wpos.x - camera.position.x, wpos.z - camera.position.z) < 60) {
+                    sound.play('metalHit', { volume: 0.3 });
+                }
+            }
+        } catch (e) {
+            console.warn('[Barrel Respawn] Ошибка респауна:', e);
+        }
+    }, respawnMs);
 }
 
 // ============================================================================
@@ -1354,28 +1654,107 @@ function breakBarrel(barrelMesh) {
 let mouseDown = false;
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ✅ НОВОЕ: проверка — нельзя ставить сундук/печку у дороги, амбара, заправки, чекблока.
+//    Возвращает true если позиция слишком близко к любой локации.
+function isPlacementBlocked(x, z) {
+    const MIN_DIST_ROAD = 6;     // не ближе 6м к дороге
+    const MIN_DIST_LOC = 12;     // не ближе 12м к заправке/амбару/чекблоку
+    // ✅ НОВОЕ: нельзя ставить сквозь стену — проверка перекрытия с коллайдерами зданий
+    if (typeof buildingSystem !== 'undefined' && buildingSystem.colliders) {
+        const r = 0.5;   // радиус объекта
+        for (const c of buildingSystem.colliders) {
+            if (c.on === false) continue;
+            if (c.step) continue;  // фундаменты — можно ставить НА них
+            // XZ перекрытие
+            if (x + r > c.minX && x - r < c.maxX && z + r > c.minZ && z - r < c.maxZ) {
+                return true;   // перекрывает стену
+            }
+        }
+    }
+    // Дорога
+    if (roadData && roadData.curve) {
+        for (let i = 0; i <= 40; i++) {
+            const p = roadData.curve.getPointAt(i / 40);
+            const dx = p.x - x, dz = p.z - z;
+            if (dx * dx + dz * dz < MIN_DIST_ROAD * MIN_DIST_ROAD) return true;
+        }
+    }
+    // Заправки
+    if (typeof gsPositions !== 'undefined') {
+        for (const gsp of gsPositions) {
+            const dx = gsp.x - x, dz = gsp.z - z;
+            if (dx * dx + dz * dz < MIN_DIST_LOC * MIN_DIST_LOC) return true;
+        }
+    }
+    // Амбары
+    if (typeof warehousePositions !== 'undefined') {
+        for (const wp of warehousePositions) {
+            const dx = wp.x - x, dz = wp.z - z;
+            if (dx * dx + dz * dz < MIN_DIST_LOC * MIN_DIST_LOC) return true;
+        }
+    }
+    // Чекблоки
+    if (typeof checkBlockPositions !== 'undefined') {
+        for (const cp of checkBlockPositions) {
+            const dx = cp.x - x, dz = cp.z - z;
+            if (dx * dx + dz * dz < MIN_DIST_LOC * MIN_DIST_LOC) return true;
+        }
+    }
+    return false;
+}
+
 window.addEventListener('mousedown', (e) => {
-    if (inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()) return;
+    if (inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen() || isFurnaceMenuOpen()) return;
     if (!player.enabled && !inBuggy) return;
     if (isDriver()) return;
-
-    // 1. Сундук-призрак (storageMode)
     if (window.storageMode) {
         if (e.button === 0) {
-            if (inventory.countItem('wood') >= 50 && inventory.countItem('storage_chest') >= 1) {
+            if (inventory.countItem('storage_chest') >= 1) {
+                // ✅ ИЗМЕНЕНО: убрано требование 50 дерева — нужен только предмет "сундук".
+                //    Сундук крафтится за 25 дерева в крафт-меню, дальше просто ставится.
+                if (isPlacementBlocked(camera.position.x, camera.position.z)) {
+                    showToast('Здесь нельзя ставить — близко к дороге/локации');
+                    return;
+                }
                 const placed = storageWorld.tryPlace();
                 if (placed) {
-                    inventory.removeItem('wood', 50);
                     inventory.removeItem('storage_chest', 1);
-                    showToast('📦 Сундук установлен');
+                    showToast('Сундук установлен');
                     window.storageMode = false;
                     storageWorld.hideGhost();
                     checkActiveWeapon();
-                } else { showToast('❌ Здесь нельзя поставить!'); }
-            } else { showToast('❌ Нужно 50 дерева и сундук!'); }
+                } else { showToast('Здесь нельзя поставить!'); }
+            } else { showToast('Нет сундука! Скрафти в крафт-меню'); }
         } else if (e.button === 2) {
             window.storageMode = false;
             storageWorld.hideGhost();
+            checkActiveWeapon();
+        }
+        return;
+    }
+    // ✅ НОВОЕ: 1b. Печка-призрак (furnaceMode) — размещается как сундук.
+    //    Для размещения нужен 1 предмет "furnace" в инвентаре (крафтится за 2 трубы + 50 камня).
+    if (window.furnaceMode) {
+        if (e.button === 0) {
+            if (inventory.countItem('furnace') >= 1) {
+                // ✅ НОВОЕ: нельзя ставить у дороги/амбара/заправки/чекблока
+                if (isPlacementBlocked(camera.position.x, camera.position.z)) {
+                    showToast('Здесь нельзя ставить — близко к дороге/локации');
+                    return;
+                }
+                const placed = furnaceWorld ? furnaceWorld.tryPlace() : null;
+                if (placed) {
+                    inventory.removeItem('furnace', 1);
+                    showToast('Печка установленаа — нажми F чтобы открыть');
+                    window.furnaceMode = false;
+                    if (furnaceWorld) furnaceWorld.hideGhost();
+                    checkActiveWeapon();
+                } else { showToast('Здесь нельзя поставить!'); }
+            } else { showToast('Нет печки в инвентаре! Скрафти в крафт-меню'); }
+        } else if (e.button === 2) {
+            window.furnaceMode = false;
+            if (furnaceWorld) furnaceWorld.hideGhost();
             checkActiveWeapon();
         }
         return;
@@ -1389,8 +1768,8 @@ window.addEventListener('mousedown', (e) => {
                     inventory.removeItem('door', 1);
                     showToast('🚪 Дверь установлена');
                     if (inventory.countItem('door') < 1) { window.doorMode = false; buildingSystem.hideDoorGhost(); checkActiveWeapon(); }
-                } else { showToast('❌ Нет дверного проёма!'); }
-            } else { showToast('❌ Нет двери!'); }
+                } else { showToast('Нет дверного проёма!'); }
+            } else { showToast('Нет двери!'); }
         } else if (e.button === 2) { window.doorMode = false; buildingSystem.hideDoorGhost(); checkActiveWeapon(); }
         return;
     }
@@ -1405,9 +1784,9 @@ window.addEventListener('mousedown', (e) => {
                     inventory.removeItem('lock', 1);
                     showToast('🔒 Замок установлен');
                     if (inventory.countItem('lock') < 1) { window.lockMode = false; buildingSystem.hideLockGhost(); checkActiveWeapon(); }
-                } else if (res && res.failed) { showToast('❌ Уже заперто'); }
-                else { showToast('❌ Нет двери перед тобой'); }
-            } else { showToast('❌ Нет замка!'); }
+                } else if (res && res.failed) { showToast('Уже заперто'); }
+                else { showToast('Нет двери перед тобой'); }
+            } else { showToast('Нет замка!'); }
         } else if (e.button === 2) { window.lockMode = false; buildingSystem.hideLockGhost(); checkActiveWeapon(); }
         return;
     }
@@ -1419,7 +1798,7 @@ window.addEventListener('mousedown', (e) => {
                 window.buildMode = false;
                 buildingSystem.cancel();
                 buildingSystem.hideDoorGhost();
-                showToast('❌ Режим строительства выключен (нет чертежа в руках)');
+                showToast('Режим строительства выключен (нет чертежа в руках)');
                 checkActiveWeapon();
                 return;
             }
@@ -1431,14 +1810,14 @@ window.addEventListener('mousedown', (e) => {
                     sound.play('chop1', { volume: 0.8 });
                     showToast('🚪 Дверь установлена');
                 } else {
-                    showToast('❌ Нет двери в инвентаре!');
+                    showToast('Нет двери в инвентаре!');
                 }
                 return;
             }
             // Обычное строительство
             const placed = buildingSystem.tryPlace();
             if (placed) { sound.play('chop1', { volume: 0.8 }); }
-            else { showToast('❌ Здесь нельзя построить!'); }
+            else { showToast('Здесь нельзя построить!'); }
         } else if (e.button === 2) { buildingSystem.cancel(); buildingSystem.hideDoorGhost(); }
         return;
     }
@@ -1514,7 +1893,7 @@ window.addEventListener('keydown', (e) => {
         }
 
         // ✅ F работает даже без pointer lock (после закрытия ящика player.enabled=false)
-        if (inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()) return;
+        if (inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen() || isFurnaceMenuOpen()) return;
 
         const ray = new THREE.Raycaster();
         ray.setFromCamera(screenCenter, camera);
@@ -1547,6 +1926,15 @@ window.addEventListener('keydown', (e) => {
             e.stopImmediatePropagation();
             return;
         }
+        // ✅ НОВОЕ: Печка — открывается на F (UI плавки)
+        if (furnaceWorld) {
+            const furnaceHit = furnaceWorld.tryInteract(ray, 3.5);
+            if (furnaceHit) {
+                openFurnaceUI(furnaceHit, inventory);
+                e.stopImmediatePropagation();
+                return;
+            }
+        }
         // ✅ Ящики (военные/деревянные/инструментальные/toolbox) — открытие на F
         //    Split-panel UI. Можно открывать сколько угодно раз.
         //    Raycast по всей модели ящика (не по крышке).
@@ -1573,15 +1961,18 @@ window.addEventListener('keydown', (e) => {
         if (doorHit) {
             if (doorHit.locked) {
                 if (doorHit.lockOwner === PLAYER_ID) {
-                    buildingSystem.setDoorLocked(doorHit.key, false);
-                    showToast('🔓 Замок снят');
+                    // ✅ ИЗМЕНЕНО: владелец ОТКРЫВАЕТ/ЗАКРЫВАЕТ дверь, замок НЕ снимается.
+                    //    Раньше: setDoorLocked(false) → замок снимался → дверь оставалась без защиты.
+                    const isOpen = buildingSystem.isDoorOpen(doorHit.key);
+                    buildingSystem.setDoorOpen(doorHit.key, !isOpen);
+                    // Замок остаётся — дверь защищена даже после закрытия.
                 } else {
-                    showToast('🔒 Дверь заперта!');
+                    showToast('Дверь заперта');
                 }
             } else {
                 const isOpen = buildingSystem.isDoorOpen(doorHit.key);
                 buildingSystem.setDoorOpen(doorHit.key, !isOpen);
-                showToast(`🚪 Дверь ${!isOpen ? 'открыта' : 'закрыта'}`);
+                showToast(`Дверь ${!isOpen ? 'открыта' : 'закрыта'}`);
             }
             return;
         }
@@ -1678,7 +2069,7 @@ window.addEventListener('keydown', (e) => {
                             }
                             showToast(`🚗 Ты сел в вездеход (${seatId === 'driver' ? 'водитель' : 'пассажир'})`);
                             return;
-                        } else { showToast('❌ Сиденье занято!'); return; }
+                        } else { showToast('Сиденье занято!'); return; }
                     }
                 }
             }
@@ -1708,18 +2099,38 @@ window.addEventListener('keydown', (e) => {
     }
 
     // ✅ R — перезарядка АК-47, берданки или дробовика
+    // ✅ ИЗМЕНЕНО: перезарядка берёт патроны из инвентаря (винтовочные патроны
+    //    для АК/берданки, патроны дробовика для дробовика). Если патронов нет —
+    //    нужно скрафтить в крафт-меню (Q).
     if (e.code === 'KeyR' && (currentWeapon === 'ak47' || currentWeapon === 'berdana' || currentWeapon === 'shotgun')) {
         e.preventDefault();
         if (currentWeapon === 'ak47') {
-            window.__akAmmo = AK_MAG_SIZE;
-            showToast('🔫 Перезарядка АК: ' + AK_MAG_SIZE + '/' + AK_MAG_SIZE);
+            const need = AK_MAG_SIZE - (window.__akAmmo || 0);
+            if (need <= 0) { showToast('🔫 АК уже заряжен: ' + window.__akAmmo + '/' + AK_MAG_SIZE); return; }
+            const have = inventory.countItem('rifle_bullet');
+            if (have <= 0) { showToast('🔫 Нет винтовочных патронов! Скрафти в крафт-меню (Q)'); return; }
+            const take = Math.min(need, have);
+            inventory.removeItem('rifle_bullet', take);
+            window.__akAmmo = (window.__akAmmo || 0) + take;
+            showToast('🔫 Перезарядка АК: +' + take + ' → ' + window.__akAmmo + '/' + AK_MAG_SIZE);
         } else if (currentWeapon === 'berdana') {
-            window.__berdanaAmmo = BERDANA_MAG_SIZE;
-            showToast('🎯 Перезарядка берданки: ' + BERDANA_MAG_SIZE + '/' + BERDANA_MAG_SIZE);
+            const need = BERDANA_MAG_SIZE - (window.__berdanaAmmo || 0);
+            if (need <= 0) { showToast('🎯 Берданка уже заряжена: ' + window.__berdanaAmmo + '/' + BERDANA_MAG_SIZE); return; }
+            const have = inventory.countItem('rifle_bullet');
+            if (have <= 0) { showToast('🎯 Нет винтовочных патронов! Скрафти в крафт-меню (Q)'); return; }
+            const take = Math.min(need, have);
+            inventory.removeItem('rifle_bullet', take);
+            window.__berdanaAmmo = (window.__berdanaAmmo || 0) + take;
+            showToast('🎯 Перезарядка берданки: +' + take + ' → ' + window.__berdanaAmmo + '/' + BERDANA_MAG_SIZE);
         } else if (currentWeapon === 'shotgun') {
-            // ✅ НОВОЕ: перезарядка дробовика — 2 патрона
-            window.__shotgunAmmo = SHOTGUN_MAG_SIZE;
-            showToast('🔫 Перезарядка дробовика: ' + SHOTGUN_MAG_SIZE + '/' + SHOTGUN_MAG_SIZE);
+            const need = SHOTGUN_MAG_SIZE - (window.__shotgunAmmo || 0);
+            if (need <= 0) { showToast('🔫 Дробовик уже заряжен: ' + window.__shotgunAmmo + '/' + SHOTGUN_MAG_SIZE); return; }
+            const have = inventory.countItem('shotgun_shell');
+            if (have <= 0) { showToast('🔫 Нет патронов дробовика! Скрафти в крафт-меню (Q)'); return; }
+            const take = Math.min(need, have);
+            inventory.removeItem('shotgun_shell', take);
+            window.__shotgunAmmo = (window.__shotgunAmmo || 0) + take;
+            showToast('🔫 Перезарядка дробовика: +' + take + ' → ' + window.__shotgunAmmo + '/' + SHOTGUN_MAG_SIZE);
         }
         return;
     }
@@ -1727,6 +2138,8 @@ window.addEventListener('keydown', (e) => {
     if (!player.enabled && !inBuggy) return;
     if (isDriver()) return;
     if (inventory.isOpen) { if (e.code === 'Escape' || e.code === 'KeyE') inventory.close(); return; }
+    // ✅ НОВОЕ: закрытие UI печки на Escape/F/E
+    if (isFurnaceMenuOpen()) { if (e.code === 'Escape' || e.code === 'KeyF' || e.code === 'KeyE') closeFurnaceUI(); return; }
 
     // 5. Z — открыть меню выбора частей для стройки (когда в руках blueprint)
     if (e.code === 'KeyZ' && currentWeapon === 'blueprint') {
@@ -2108,22 +2521,22 @@ function animate() {
             player.velocity.x *= aimSlow;
             player.velocity.z *= aimSlow;
         }
-        const buildResult = buildingSystem.collideCircle(camera.position, 0.35, camera.position.y - 1.7);
+        const buildResult = buildingSystem.collideCircle(camera.position, 0.35, camera.position.y - player.playerHeight);
         if (buildResult && buildResult.grounded && buildResult.groundY !== null) {
-            camera.position.y = buildResult.groundY + 1.7;
+            camera.position.y = buildResult.groundY + player.playerHeight;
             player.velocity.y = 0; player.isOnGround = true;
         }
         for (const gs of gasStations) {
-            const feet = new THREE.Vector3(camera.position.x, camera.position.y - 1.7, camera.position.z);
+            const feet = new THREE.Vector3(camera.position.x, camera.position.y - player.playerHeight, camera.position.z);
             const res = gs.resolveAll(feet, 0.35, 1.8, 0.6);
             camera.position.x = feet.x; camera.position.z = feet.z;
-            if (res.grounded && res.ground !== null) { camera.position.y = res.ground + 1.7; player.velocity.y = 0; player.isOnGround = true; }
+            if (res.grounded && res.ground !== null) { camera.position.y = res.ground + player.playerHeight; player.velocity.y = 0; player.isOnGround = true; }
         }
         for (const wh of warehouses) {
-            const feet = new THREE.Vector3(camera.position.x, camera.position.y - 1.7, camera.position.z);
+            const feet = new THREE.Vector3(camera.position.x, camera.position.y - player.playerHeight, camera.position.z);
             const res = wh.resolveAll(feet, 0.35, 1.8, 0.6, player.velocity.y);
             camera.position.x = feet.x; camera.position.z = feet.z;
-            if (res.grounded && res.ground !== null) { camera.position.y = res.ground + 1.7; player.velocity.y = 0; player.isOnGround = true; }
+            if (res.grounded && res.ground !== null) { camera.position.y = res.ground + player.playerHeight; player.velocity.y = 0; player.isOnGround = true; }
         }
         // ✅ НОВОЕ: proper AABB-коллизия для всех машин (грузовики, легковушки, багги).
         //    Раньше player.js проверял коллизию с машинами как «точка + радиус 1.5м» —
@@ -2136,11 +2549,11 @@ function animate() {
         if (!inBuggy) {
             for (const v of vehicles) {
                 if (!v || !v.resolve) continue;
-                const feet = new THREE.Vector3(camera.position.x, camera.position.y - 1.7, camera.position.z);
+                const feet = new THREE.Vector3(camera.position.x, camera.position.y - player.playerHeight, camera.position.z);
                 const res = v.resolve(feet, 0.35, 1.8, 0.6);
                 camera.position.x = feet.x; camera.position.z = feet.z;
                 if (res.grounded && res.ground !== null) {
-                    camera.position.y = res.ground + 1.7;
+                    camera.position.y = res.ground + player.playerHeight;
                     player.velocity.y = 0;
                     player.isOnGround = true;
                 }
@@ -2150,11 +2563,11 @@ function animate() {
             //    можно было подойти к багги вплотную и запрыгнуть на капот.
             for (const bv of allBuggies) {
                 if (!bv || !bv.resolve) continue;
-                const feet = new THREE.Vector3(camera.position.x, camera.position.y - 1.7, camera.position.z);
+                const feet = new THREE.Vector3(camera.position.x, camera.position.y - player.playerHeight, camera.position.z);
                 const res = bv.resolve(feet, 0.35, 1.8, 0.6);
                 camera.position.x = feet.x; camera.position.z = feet.z;
                 if (res.grounded && res.ground !== null) {
-                    camera.position.y = res.ground + 1.7;
+                    camera.position.y = res.ground + player.playerHeight;
                     player.velocity.y = 0;
                     player.isOnGround = true;
                 }
@@ -2266,10 +2679,15 @@ function animate() {
         }
     }
 
-    // Обновление призраков (storage / door / lock / build)
+    // Обновление призраков (storage / furnace / door / lock / build)
     if (window.storageMode) {
         const ray = new THREE.Raycaster(); ray.setFromCamera(screenCenter, camera);
         storageWorld.updateGhost(ray, [ground, buildingSystem.group]);
+    }
+    // ✅ НОВОЕ: призрак печки (furnaceMode)
+    if (window.furnaceMode && furnaceWorld) {
+        const ray = new THREE.Raycaster(); ray.setFromCamera(screenCenter, camera);
+        furnaceWorld.updateGhost(ray, [ground, buildingSystem.group]);
     }
     if (window.doorMode) {
         const ray = new THREE.Raycaster(); ray.setFromCamera(screenCenter, camera);
@@ -2282,13 +2700,19 @@ function animate() {
     if (window.buildMode) {
         const ray = new THREE.Raycaster(); ray.setFromCamera(screenCenter, camera);
         buildingSystem.updateAim(ray, camera);
-        buildingSystem.updateDoorAim(ray, camera);
+        // ✅ УБРАНО: buildingSystem.updateDoorAim(ray, camera) —
+        //    дверь ставится ТОЛЬКО из хотбара (когда в руках item.id==='door'),
+        //    не из режима стройки (blueprint). Раньше призрак двери
+        //    появлялся когда игрок с планом смотрел на проём — даже без двери.
     } else if (!window.doorMode && !window.lockMode) {
         buildingSystem.hideDoorGhost();
     }
 
     buildingSystem.update(delta);
     storageWorld.update(delta);
+    // ✅ НОВОЕ: тики печки (плавка + частицы) + UI (прогресс-бар)
+    if (furnaceWorld) furnaceWorld.update(delta);
+    tickFurnaceUI();
     craftMenu.update(delta);
     mapUI.update();   // ✅ НОВОЕ: обновление маркера на карте (если открыта)
     // ✅ НОВОЕ: обновление ящиков — проверка пустых + таймеры респавна.

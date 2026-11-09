@@ -542,6 +542,14 @@ export function createBuilding(scene, terrainMesh, getHeight) {
         else pos.z = c.maxZ + r;
       }
     }
+    // ✅ НОВОЕ: возвращаем support height для шага по фундаменту.
+    //    Раньше функция была void — main.js не получал grounded/groundY,
+    //    и игрок проваливался сквозь фундамент вместо ходьбы по нему.
+    const support = supportHeight(pos.x, pos.z, feetY);
+    if (support !== null) {
+      return { grounded: true, groundY: support };
+    }
+    return { grounded: false, groundY: null };
   }
 
   function supportHeight(x, z, feetY) {

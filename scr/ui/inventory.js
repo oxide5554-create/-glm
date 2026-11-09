@@ -35,7 +35,7 @@ export class Inventory {
   removeItem(itemId, count) {
     let remaining = count;
     for (let i = 6; i < this.size; i++) {
-      if (this.slots[i] && this.slots[i].item.id === itemId) {
+      if (this.slots[i] && this.slots[i].item && this.slots[i].item.id === itemId) {
         if (this.slots[i].count <= remaining) {
           remaining -= this.slots[i].count;
           this.slots[i] = null;
@@ -51,7 +51,7 @@ export class Inventory {
       }
     }
     for (let i = 0; i < 6; i++) {
-      if (this.slots[i] && this.slots[i].item.id === itemId) {
+      if (this.slots[i] && this.slots[i].item && this.slots[i].item.id === itemId) {
         if (this.slots[i].count <= remaining) {
           remaining -= this.slots[i].count;
           this.slots[i] = null;
@@ -138,7 +138,7 @@ export class Inventory {
     if (!item) return false;
     if (item.stackable) {
       for (let i = 6; i < this.size; i++) {
-        if (this.slots[i] && this.slots[i].item.id === itemId) {
+        if (this.slots[i] && this.slots[i].item && this.slots[i].item.id === itemId) {
           this.slots[i].count += count;
           if (this.isOpen) this.render();
           if (this.hotbar) this.hotbar.render();
@@ -146,7 +146,7 @@ export class Inventory {
         }
       }
       for (let i = 0; i < 6; i++) {
-        if (this.slots[i] && this.slots[i].item.id === itemId) {
+        if (this.slots[i] && this.slots[i].item && this.slots[i].item.id === itemId) {
           this.slots[i].count += count;
           if (this.isOpen) this.render();
           if (this.hotbar) this.hotbar.render();
@@ -210,7 +210,7 @@ export class Inventory {
     if (type === 'hotbar') {
       inner += `<div class="slot-key">${index + 1}</div>`;
     }
-    if (slot) {
+    if (slot && slot.item) {
       inner += renderIcon(slot.item);
       if (slot.item.stackable && slot.count > 1) {
         inner += `<div class="slot-count">${slot.count}</div>`;
@@ -220,7 +220,7 @@ export class Inventory {
     div.innerHTML = inner;
 
     // ✅ Re-attach event listeners (innerHTML сбрасывает их)
-    if (slot) {
+    if (slot && slot.item) {
       div.title = slot.item.name;
       div.draggable = true;
       div.addEventListener('dragstart', (e) => {

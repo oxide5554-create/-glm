@@ -27,19 +27,30 @@ export const ITEMS = {
   pipe:             { id: 'pipe',             name: 'Труба',               icon: './scr/ui/icons/pipe.webp',           emoji: '🧱', stackable: true, stack: 20 },
   // ✅ Ресурсы для крафта
   metalFragment:    { id: 'metalFragment',    name: 'Металл (фрагмент)',   icon: './scr/ui/icons/metal_fragments.webp', emoji: '⚙️', stackable: true, stack: 100 },
-  mvc:              { id: 'mvc',              name: 'МВК',                 icon: './scr/ui/icons/mvc.webp',            emoji: '🧱', stackable: true, stack: 100 }
+  mvc:              { id: 'mvc',              name: 'МВК',                 icon: './scr/ui/icons/mvc.webp',            emoji: '🧱', stackable: true, stack: 100 },
+  // ✅ НОВОЕ: сера (сырье для пороха)
+  sulfur_ore:       { id: 'sulfur_ore',       name: 'Серная руда',         icon: './scr/ui/icons/sulfur_ore.png',      emoji: '🪨', stackable: true, stack: 100 },   // не плавленая сера (из камней)
+  sulfur:           { id: 'sulfur',           name: 'Сера (плавленая)',    icon: './scr/ui/icons/sulfur.png',          emoji: '🟡', stackable: true, stack: 100 },   // плавленая сера (из печки)
+  iron_ore:         { id: 'iron_ore',         name: 'Железная руда',       icon: './scr/ui/icons/iron_ore.png',        emoji: '⛏️', stackable: true, stack: 100 },   // не плавленое железо (из руды)
+  iron:             { id: 'iron',             name: 'Железо (плавленое)',  icon: './scr/ui/icons/metal_fragments.webp', emoji: '🔩', stackable: true, stack: 100 },   // плавленое железо (из печки)
+  furnace:          { id: 'furnace',          name: 'Печка',               icon: './scr/ui/icons/furnace.png',         emoji: '🔥', stackable: true, stack: 5 },     // для плавки серы/железа
+  gunpowder:        { id: 'gunpowder',        name: 'Порох',               icon: './scr/ui/icons/gunpowder.png',       emoji: '💨', stackable: true, stack: 500 },
+  // ✅ НОВОЕ: патроны (крафтятся из пороха + металл)
+  rifle_bullet:     { id: 'rifle_bullet',     name: 'Винтовочный патрон',  icon: './scr/ui/icons/rifle_bullet.png',    emoji: '🔫', stackable: true, stack: 500 },   // для АК-47 и берданки
+  shotgun_shell:    { id: 'shotgun_shell',    name: 'Патрон дробовика',    icon: './scr/ui/icons/shotgun_shell.png',   emoji: '🔴', stackable: true, stack: 200 },   // для дробовика
 };
 
 // ✅ Рендер иконки — img с INLINE styles, заполняет слот (width:100%)
 export function renderIcon(item) {
+  if (!item) return '';
   const imgSrc = item.icon;
   if (imgSrc) {
     return `<img src="${imgSrc}" alt="${item.name || ''}" draggable="false" ` +
            `style="display:block;width:100%;height:100%;object-fit:contain;position:absolute;top:0;left:0;z-index:2;pointer-events:none" ` +
-           `onerror="console.error('IMG FAIL:', this.src)">`;
+           `onerror="this.style.display='none'">`;
   }
-  const emoji = item.emoji || '📦';
-  return `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:28px;position:absolute;top:0;left:0;z-index:2;pointer-events:none">${emoji}</div>`;
+  const emoji = item.emoji || '';
+  return emoji ? `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:28px;position:absolute;top:0;left:0;z-index:2;pointer-events:none">${emoji}</div>` : '';
 }
 
 export class Hotbar {

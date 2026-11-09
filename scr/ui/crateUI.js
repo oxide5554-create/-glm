@@ -26,7 +26,7 @@ const CSS = `
 .crate-ghost img{width:26px;height:26px;object-fit:contain}
 `;
 
-let panelEl = null, crateGridEl = null, invGridEl = null;
+let panelEl = null, crateGridEl = null, invGridEl = null, hotbarGridEl = null;
 let activeCrate = null, playerInv = null, isOpen = false;
 let lastOpenTime = 0;  // ✅ timestamp последнего openCrateUI — для защиты от
                        //    немедленного закрытия на том же keydown event'е
@@ -41,20 +41,23 @@ function ensurePanel() {
   panelEl = document.createElement("div");
   panelEl.className = "crate-overlay";
   panelEl.innerHTML = `<div class="crate-panel">
-    <button class="crate-close-btn" id="crateCloseBtn">✕</button>
+    <button class="crate-close-btn" id="crateCloseBtn">X</button>
     <div class="crate-col">
-      <div class="crate-title" id="crateTitle">📦 ЯЩИК</div>
+      <div class="crate-title" id="crateTitle">ЯЩИК</div>
       <div class="crate-grid" id="crateCrateGrid"></div>
     </div>
     <div class="crate-col">
       <div class="crate-title">ИНВЕНТАРЬ</div>
       <div class="crate-grid" id="crateInvGrid"></div>
+      <div class="crate-title" style="margin-top:8px">HOTBAR</div>
+      <div class="crate-grid" id="crateHotbarGrid"></div>
     </div>
   </div>
   <div class="crate-close-hint">F / ESC — закрыть</div>`;
   document.body.appendChild(panelEl);
   crateGridEl = panelEl.querySelector("#crateCrateGrid");
   invGridEl = panelEl.querySelector("#crateInvGrid");
+  hotbarGridEl = panelEl.querySelector("#crateHotbarGrid");
   panelEl.querySelector("#crateCloseBtn").addEventListener("click", () => closeCrateUI());
   panelEl.addEventListener("mousedown", (e) => {
     if (e.target === panelEl) closeCrateUI();
@@ -88,19 +91,23 @@ function crateSize(crate) {
 }
 
 function crateTitle(crate) {
-  if (!crate) return '📦 ЯЩИК';
-  if (crate.type === 'military') return '🪖 ВОЕННЫЙ ЯЩИК';
-  if (crate.type === 'tool' || crate.type === 'toolbox') return '🧰 ИНСТРУМЕНТАЛЬНЫЙ ЯЩИК';
-  return '📦 ДЕРЕВЯННЫЙ ЯЩИК';
+  if (!crate) return 'ЯЩИК';
+  if (crate.type === 'military') return 'ВОЕННЫЙ ЯЩИК';
+  if (crate.type === 'tool' || crate.type === 'toolbox') return 'ИНСТРУМЕНТАЛЬНЫЙ ЯЩИК';
+  return 'ДЕРЕВЯННЫЙ ЯЩИК';
 }
 
 function makeIconHTML(itemId) {
   const def = ITEMS[itemId];
-  if (!def) return '<div class="emoji">❓</div>';
+  if (!def) return '';
   if (def.icon && typeof def.icon === 'string' && def.icon.includes('.')) {
     return `<img src="${def.icon}" alt="" draggable="false">`;
   }
-  return `<div class="emoji">${def.emoji || '📦'}</div>`;
+  // ✅ Используем иконку (img) если есть, иначе ничего
+  if (def.icon) {
+    return `<img src="${def.icon}" style="width:100%;height:100%;object-fit:contain" onerror="this.style.display='none'">`;
+  }
+  return '';
 }
 
 function renderSlotC(container, slot, index, source) {
@@ -137,10 +144,10 @@ function renderSlotC(container, slot, index, source) {
 function renderCrateUI() {
   if (!activeCrate || !playerInv) return;
   const size = crateSize(activeCrate);
-  // ✅ ВСЕГДА перечитываем loot (можно открывать много раз!)
   activeCrate._slots = lootToSlots(activeCrate.loot, size);
   crateGridEl.innerHTML = "";
   invGridEl.innerHTML = "";
+  if (hotbarGridEl) hotbarGridEl.innerHTML = "";
   for (let i = 0; i < size; i++) {
     renderSlotC(crateGridEl, activeCrate._slots[i], i, "crate");
   }
@@ -148,6 +155,13 @@ function renderCrateUI() {
     const invIdx = 6 + i;
     const s = playerInv.slots[invIdx];
     renderSlotC(invGridEl, s ? { id: s.item.id, count: s.count } : null, invIdx, "inv");
+  }
+  // ✅ НОВОЕ: HOTBAR — слоты 0..5 в отдельной секции
+  if (hotbarGridEl) {
+    for (let i = 0; i < 6; i++) {
+      const s = playerInv.slots[i];
+      renderSlotC(hotbarGridEl, s ? { id: s.item.id, count: s.count } : null, i, "hotbar");
+    }
   }
 }
 
@@ -225,7 +239,9 @@ function syncToInventory() {
 
 function fillInvBuf() {
   playerInv._crateBuf = new Array(playerInv.slots.length).fill(null);
-  for (let i = 6; i < playerInv.slots.length; i++) {
+  // ✅ ИЗМЕНЕНО: заполняем ВСЕ слоты (0-5 хотбар + 6+ инвентарь)
+  //    Раньше только 6+ — хотбар не работал в drag-and-drop.
+  for (let i = 0; i < playerInv.slots.length; i++) {
     const s = playerInv.slots[i];
     if (s && s.item) {
       playerInv._crateBuf[i] = { id: s.item.id, count: s.count };

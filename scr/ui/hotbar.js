@@ -14,6 +14,8 @@ export const ITEMS = {
   door:             { id: 'door',             name: 'Деревянная дверь',    icon: './scr/ui/icons/wooden_door.png',       emoji: '🚪', stackable: true, stack: 10 },
   ak47:             { id: 'ak47',             name: 'АК-47',               icon: './scr/ui/icons/rifle_ak.png',          emoji: '🔫', stackable: false },
   berdana:          { id: 'berdana',          name: 'Берданка',            icon: './scr/ui/icons/berdana.png',           emoji: '🎯', stackable: false },
+  // ✅ НОВОЕ: дробовик (помповый) — 2 патрона, огромный разброс, сильная отдача
+  shotgun:          { id: 'shotgun',          name: 'Дробовик',            icon: './scr/ui/icons/shotgun_pump.webp',     emoji: '🔫', stackable: false },
   rawMeat:          { id: 'rawMeat',          name: 'Сырое мясо',          icon: './scr/ui/icons/raw_meat.png',          emoji: '🍖', stackable: true, stack: 100 },
   bone:             { id: 'bone',             name: 'Кости',               icon: './scr/ui/icons/bone.png',              emoji: '🦴', stackable: true, stack: 100 },
   cloth:            { id: 'cloth',            name: 'Ткань',               icon: './scr/ui/icons/cloth.png',             emoji: '🧵', stackable: true, stack: 100 },

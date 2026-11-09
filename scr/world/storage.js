@@ -204,6 +204,8 @@ const CSS = `
 
 let storagePanelEl = null, storageGridEl = null, invGridEl2 = null;
 let activeChestData = null, playerInv = null, isStorageOpen = false;
+let lastOpenTime = 0;  // ✅ timestamp последнего openStorageMenu — для защиты от
+                       //    немедленного закрытия на том же keydown event'е
 let dragData2 = null, dragGhost2 = null;
 
 function ensurePanel() {
@@ -345,9 +347,36 @@ export function openStorageMenu(chestData, inventory) {
   playerInv = inventory; // ✅ inventory — это объект Inventory из inventory.js
   isStorageOpen = true;
   window.__isStorageOpen = true;
+  lastOpenTime = performance.now();  // ✅ запоминаем когда открыли
   renderStorageUI();
   storagePanelEl.classList.add("open");
   if (document.pointerLockElement) document.exitPointerLock();
+  // ✅ Скрываем хотбар пока открыт сундук
+  const hb = document.getElementById('hotbar');
+  if (hb) hb.style.display = 'none';
+  // ✅ Регистрируем key handler для закрытия по Esc/F (как в crateUI.js).
+  //    Раньше подсказка "F / ESC — закрыть" показывалась, но Esc/F НЕ работали —
+  //    можно было закрыть только кнопкой ✕. Теперь ключи работают.
+  if (!window.__storageKeyHandler) {
+    window.__storageKeyHandler = (e) => {
+      if (!isStorageOpen) return;
+      if (e.code === 'Escape') {
+        e.preventDefault();
+        closeStorageMenu();
+      } else if (e.code === 'KeyF') {
+        // ✅ Защита от закрытия на том же keypress, которым сундук открыли.
+        //    main.js вызывает openStorageMenu на F → isStorageOpen=true →
+        //    тот же keydown проходит к этому handler'у и сразу бы закрыл сундук.
+        //    main.js останавливает диспетчеризацию через stopImmediatePropagation,
+        //    но это запасная защита — если по какой-то причине stopImmediatePropagation
+        //    не сработал, игнорируем F в первые 300мс после открытия.
+        if (performance.now() - lastOpenTime < 300) return;
+        e.preventDefault();
+        closeStorageMenu();
+      }
+    };
+    window.addEventListener('keydown', window.__storageKeyHandler);
+  }
 }
 
 export function closeStorageMenu() {
@@ -358,6 +387,15 @@ export function closeStorageMenu() {
   if (storagePanelEl) storagePanelEl.classList.remove("open");
   dragData2 = null;
   if (dragGhost2) { dragGhost2.remove(); dragGhost2 = null; }
+  // ✅ Показываем хотбар обратно
+  const hb = document.getElementById('hotbar');
+  if (hb) hb.style.display = '';
+  // ✅ Восстанавливаем pointer lock — иначе после закрытия сундука курсор
+  //    остаётся свободным и игрок не может продолжить игру без лишнего клика.
+  //    Helper проверит, что других меню нет, и безопасно вызовет controls.lock().
+  if (typeof window.__requestPointerLock === 'function') {
+    window.__requestPointerLock();
+  }
 }
 
 export function isStorageMenuOpen() { return isStorageOpen; }

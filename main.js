@@ -28,11 +28,12 @@ import { createCraftMenu } from './scr/ui/craftmenu.js';
 import { initSettings } from './scr/ui/settings.js';
 import { openCrateUI, closeCrateUI, isCrateUIOpen } from './scr/ui/crateUI.js';
 import { showCrosshair, updateCrosshair, recoilBoost, getCurrentSpread } from './scr/ui/crosshair.js';
+import { createMap } from './scr/ui/map.js';   // ✅ НОВОЕ: карта мира (открывается на M)
 
 // ✅ Мир: флора, террейн, бочки, постройки, хранилище
 import { generateFlora, updateGrass } from './scr/world/flora.js';
 import { generateTerrain, generateRoad, generateDecorations, getGroundHeight } from './scr/world/terrain.js';
-import { createBreakableBarrel, createBarrelDebris, spawnScrap } from './scr/world/boch.js';
+import { createBreakableBarrel, createBarrelDebris, spawnScrap, preloadBarrelModel, preloadScrapModel } from './scr/world/boch.js';
 import { createBuilding } from './scr/world/building.js';
 
 // ✅ МЕДВЕДИ (модель COTW: скелет + 15 анимаций + ИИ)
@@ -167,7 +168,7 @@ for (let i = 0; i < 25; i++) {
     stone.position.set(sx, sy + 0.4, sz);
     stone.rotation.set(Math.random(), Math.random(), Math.random());
     stone.castShadow = true; stone.receiveShadow = true;
-    stone.userData.isStone = true; stone.userData.health = 3; stone.userData.maxHealth = 3;
+    stone.userData.isStone = true; stone.userData.health = 20; stone.userData.maxHealth = 20;   // ✅ 20 ударов (было 3)
     stone.userData.id = 'stone_' + i;
     scene.add(stone); colliders.push(stone);
     registerCull(stone, 120, 'stone');
@@ -193,6 +194,16 @@ for (const bush of flora.bushes.children) registerCull(bush, 120, 'bush');
 const roadData = generateRoad(scene);
 const decor = generateDecorations(scene);
 colliders.push(...decor.colliders);
+
+// ✅ НОВОЕ: предзагрузка GLB-модели ломаемой бочки.
+//    Модель загружается асинхронно — к моменту когда spawnWorldBarrel() будет
+//    вызван (ниже), она должна быть готова. Если не успела — createBreakableBarrel
+//    использует fallback на процедурную бочку.
+preloadBarrelModel().catch(() => { /* fallback уже сработает внутри */ });
+// ✅ НОВОЕ: предзагрузка GLB-модели скрапа (rust_scrap_v2.glb).
+//    Если не успеет загрузиться до разрушения первой бочки — fallback на
+//    процедурный скрап, потом заменится на GLB.
+preloadScrapModel().catch(() => { /* fallback */ });
 
 // ============================================================================
 // БЛОКПОСТЫ (45 шт.) — чекблоки (мусорки)
@@ -296,6 +307,15 @@ for (let i = 0; i < 8; i++) {
             o.userData.vehicleId = vehicle.group.userData.id;
             colliders.push(o);
         }
+        // ✅ ФИКС: также добавляем breakable barrel GROUPS в colliders.
+        //    Раньше добавлялись только меши — но после GLB-замены старые меши
+        //    становились orphaned (в colliders но не в сцене), а новые GLB меши
+        //    НЕ были в colliders → бочки не ломались.
+        //    Теперь group в colliders → intersectObjects(recursive=true) найдёт
+        //    новые GLB меши внутри group.
+        if (o.userData && o.userData.isBreakableBarrel) {
+            if (!colliders.includes(o)) colliders.push(o);
+        }
     });
 }
 
@@ -361,27 +381,11 @@ function spawnWorldBarrel(x, z, color) {
 }
 
 // ✅ Бочки убраны с заправок и амбаров (по запросу пользователя).
-//    Оставлены только вдоль дороги и случайные по карте.
-// ✅ Одиночные бочки вдоль дороги (10 шт.)
-for (let i = 0; i < 10; i++) {
-    const t = i / 10 + Math.random() * 0.05;
-    if (t >= 1) continue;
-    const point = roadData.curve.getPointAt(t);
-    const offset = (Math.random() - 0.5) * 8;
-    const tangent = roadData.curve.getTangentAt(t);
-    const px = point.x - tangent.z * offset;
-    const pz = point.z + tangent.x * offset;
-    if (Math.sqrt(px * px + pz * pz) < 25) continue;
-    spawnWorldBarrel(px, pz);
-}
-// ✅ Случайные бочки по всей карте (10 шт.)
-for (let i = 0; i < 10; i++) {
-    const x = (Math.random() - 0.5) * 500;
-    const z = (Math.random() - 0.5) * 500;
-    if (Math.sqrt(x * x + z * z) < 30) continue;
-    spawnWorldBarrel(x, z);
-}
-console.log('[Barrels] Ломаемые бочки размещены в мире:', worldBarrels.length);
+//    ✅ УБРАНО: одиночные бочки на дорогах и случайные по карте.
+//    ✅ УБРАНО: standalone бочки у чекблоков — теперь бочки ВНУТРИ чекблока
+//    (checkblock.js использует createBreakableBarrel → GLB-модель).
+//    Бочки теперь только: в грузовиках, в чекблоках (2-3 шт.), на заправках.
+console.log('[Barrels] Бочки: в грузовиках + чекблоках + на заправках');
 
 // ============================================================================
 // ✅ ЯЩИКИ (военные + деревянные + инструментальные + toolbox) — везде
@@ -404,17 +408,17 @@ crateManager.load().then(() => {
     for (const pos of checkBlockPositions) {
         crateManager.spawnAtCheckBlock(pos);
     }
-    // ✅ Toolbox в грузовиках на дороге (1 в каждом)
-    for (const v of vehicles) {
-        if (v && v.group) {
-            // проверяем что это грузовик (а не разбитая машина)
-            const isTruck = v.group.userData.id && v.group.userData.id.startsWith('veh_');
-            if (isTruck) {
-                crateManager.spawnToolboxInTruck(v.group.position, { dx: 0, dz: -1.5 });
-            }
-        }
-    }
-    console.log('[Crates] Ящики размещены в заправках, амбарах, чекблоках и грузовиках');
+    // ✅ УБРАНО: spawnToolboxInTruck — пользователь счёл инструментальные ящики
+    //    в грузовиках декорацией. Теперь грузовики пустые (ящики не спавнятся).
+    // for (const v of vehicles) {
+    //     if (v && v.group) {
+    //         const isTruck = v.group.userData.id && v.group.userData.id.startsWith('veh_');
+    //         if (isTruck) {
+    //             crateManager.spawnToolboxInTruck(v.group.position, { dx: 0, dz: -1.5 });
+    //         }
+    //     }
+    // }
+    console.log('[Crates] Ящики размещены в заправках, амбарах и чекблоках (грузовики пустые)');
 }).catch(err => {
     console.warn('[Crates] Ошибка загрузки моделей ящиков:', err);
 });
@@ -616,6 +620,10 @@ sound.load('metalHit', './sounds/boch/Metal Hit 01.wav');
 sound.load('akShot', './sounds/AssaultRifle_Shot_Tail_01.wav');
 // ✅ Звук выстрела берданки
 sound.load('berdanaShot', './sounds/berdana/shot.mp3');
+// ✅ НОВОЕ: звук выстрела дробовика (fortnite-pump-shotgun, конвертирован в WAV).
+//    ✅ ФИКС: в оригинальном MP3 было 1.5 СЕКУНДЫ тишины в начале — звук отставал.
+//    Обрезали тишину + сконвертировали в WAV (нет MP3 encoder delay → мгновенный старт).
+sound.load('shotgun', './sounds/shotgun/shotgun.wav');
 
 // ✅ Звуки медведя (3 новых звука, загружены пользователем):
 //    notice — медведь заметил игрока (idle/wander → alerted)
@@ -686,6 +694,51 @@ function showToast(text) {
     toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1600);
 }
 
+// ✅ НОВОЕ: showFloatingPickup — иконка + цифра вылетает при добыче/подборе.
+//    Показывает иконку предмета и "+count", всплывает вверх и исчезает.
+//    itemId — id предмета из ITEMS (wood, stone, scrap, rawMeat, bone, etc.)
+//    count — количество
+let _popupOffset = 0;
+function showFloatingPickup(itemId, count) {
+    const item = ITEMS[itemId];
+    if (!item) return;
+    const el = document.createElement('div');
+    // Случайное смещение по горизонтали чтобы popup'ы не накладывались
+    const rx = (Math.random() - 0.5) * 120;
+    const ry = _popupOffset;
+    _popupOffset = (_popupOffset - 40) % 120;   // следующий popup чуть выше
+    el.style.cssText = `
+        position: fixed; left: 50%; top: 45%;
+        margin-left: ${rx}px; margin-top: ${ry}px;
+        display: flex; align-items: center; gap: 6px;
+        background: rgba(0, 0, 0, 0.75);
+        padding: 6px 14px; border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        pointer-events: none; z-index: 150;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-weight: 800; font-size: 20px; color: #fff;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.9);
+        transition: opacity 1.1s ease-out, transform 1.1s ease-out;
+        transform: translateY(0) scale(0.8);
+        opacity: 0;
+    `;
+    el.innerHTML = `<img src="${item.icon}" style="width:32px;height:32px;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.8))" onerror="this.style.display='none'">` +
+                   `<span style="color:#7fd97f">+${count}</span>`;
+    document.body.appendChild(el);
+    // Анимация: появление + всплытие вверх + затухание
+    requestAnimationFrame(() => {
+        el.style.opacity = '1';
+        el.style.transform = 'translateY(-90px) scale(1)';
+    });
+    setTimeout(() => {
+        el.style.opacity = '0';
+    }, 600);
+    setTimeout(() => {
+        if (el.parentNode) el.remove();
+        if (_popupOffset === -40) _popupOffset = 0;   // сброс если последний
+    }, 1200);
+}
+
 // ============================================================================
 // RAYCASTER (для добычи ресурсов, проверок дверей и т.д.)
 // ============================================================================
@@ -739,11 +792,15 @@ const isDriver = () => inBuggy && currentBuggySeat === 'driver';
 let toolCooldown     = 0;   // для топора/кирки между ударами
 let akFireCooldown   = 0;   // для АК (автоогонь при зажатой ЛКМ)
 let berdanaCooldown  = 0;   // для берданки (одиночные с кулдауном 0.5 сек)
+let shotgunCooldown  = 0;   // ✅ НОВОЕ: для дробовика (кулдаун 0.9 сек)
 const TOOL_COOLDOWN      = 0.45;   // 450 мс между ударами
 const AK_FIRE_INTERVAL   = 0.10;   // 100 мс между выстрелами АК (600 выстр/мин)
 const BERDANA_COOLDOWN   = 0.50;   // 500 мс между выстрелами берданки
 const AK_MAG_SIZE        = 30;
 const BERDANA_MAG_SIZE   = 18;
+// ✅ НОВОЕ: дробовик — 2 патрона в обойме, кулдаун 0.9с между выстрелами.
+const SHOTGUN_MAG_SIZE   = 2;
+const SHOTGUN_FIRE_COOLDOWN = 0.90;   // сек между выстрелами
 
 // ✅ ОТДАЧА КАМЕРЫ — камера плавно уходит вверх/зигзагом при выстреле, без тряски.
 //    Используем quaternion offset: controls видит камеру БЕЗ отдачи,
@@ -842,13 +899,14 @@ function checkActiveWeapon() {
     if (item.id === 'rock')                { currentWeapon = 'rock';             fpPlayer.setWeapon('axe');     }
     else if (item.id === 'stonePickaxe')    { currentWeapon = 'stonePickaxe';     fpPlayer.setWeapon('pickaxe'); }
     else if (item.id === 'concretePickaxe') { currentWeapon = 'concretePickaxe';  fpPlayer.setWeapon('pickaxe'); }
-    // ✅ Оружие: АК-47 (автомат) / берданка (винтовка)
+    // ✅ Оружие: АК-47 (автомат) / берданка (винтовка) / дробовик (помповый)
     else if (item.id === 'ak47')            { currentWeapon = 'ak47';             fpPlayer.setWeapon('ak47');    }
     else if (item.id === 'berdana')         { currentWeapon = 'berdana';          fpPlayer.setWeapon('berdana'); }
+    else if (item.id === 'shotgun')         { currentWeapon = 'shotgun';          fpPlayer.setWeapon('shotgun'); }
     else if (item.id === 'blueprint')       { currentWeapon = 'blueprint';        fpPlayer.setWeapon('none');    }
     else                                    { currentWeapon = 'none';             fpPlayer.setWeapon('none');    }
-    // ✅ Прицел виден только для АК-47 и берданки
-    const isGun = (currentWeapon === 'ak47' || currentWeapon === 'berdana');
+    // ✅ Прицел виден для АК-47, берданки и дробовика
+    const isGun = (currentWeapon === 'ak47' || currentWeapon === 'berdana' || currentWeapon === 'shotgun');
     showCrosshair(isGun, false);
 }
 
@@ -864,6 +922,7 @@ window.__inventoryRef = inventory;
 // ✅ Стартовые патроны (предметы уже расставлены в inventory.js)
 window.__akAmmo = AK_MAG_SIZE;
 window.__berdanaAmmo = BERDANA_MAG_SIZE;
+window.__shotgunAmmo = SHOTGUN_MAG_SIZE;   // ✅ НОВОЕ: дробовик, 2 патрона
 // ✅ Несколько попыток render хотбара — чтобы точно отрисовался после загрузки DOM
 setTimeout(() => { hotbar.render(); inventory.render && inventory.render(); }, 50);
 setTimeout(() => { hotbar.render(); }, 200);
@@ -877,6 +936,17 @@ const craftMenu = createCraftMenu(document.body, inventory, {
     onToggle: (isOpen) => {}
 });
 
+// ✅ НОВОЕ: Карта мира — открывается клавишей M.
+//    ПОЛНОЭКРАННАЯ карта с реальным террейном (зелёная трава / коричневая земля),
+//    дорогой, иконками заправок/амбаров и маркером игрока.
+const mapUI = createMap(document.body, {
+    getCamera: () => camera,
+    getRoadPoints: () => _roadPoints,
+    getGasStations: () => gsPositions,
+    getWarehouses: () => warehousePositions,
+    getGroundHeight: getGroundHeight,   // ✅ для генерации террейна карты
+});
+
 const buildMenu = createBuildMenu(document.body, buildingSystem);
 
 checkActiveWeapon();
@@ -885,6 +955,15 @@ checkActiveWeapon();
 // УПРАВЛЕНИЕ ИГРОКОМ
 // ============================================================================
 const controls = new PointerLockControls(camera, document.body);
+// ✅ ОГРАНИЧЕНИЕ вертикального обзора мышью: ±85° от горизонтали.
+//    PointerLockControls по умолчанию разрешает ±90° (что = gimbal lock,
+//    сингулярность Euler). Ограничиваем до ±85° — это та же граница, что
+//    используется в коде отдачи (см. ниже, в animate loop).
+//    5° = полярный угол от "прямого верха" / "прямого низа".
+//    minPolarAngle — минимальный угол от +Y (5° → камера не смотрит прямо вверх).
+//    maxPolarAngle — максимальный угол от +Y (175° → камера не смотрит прямо вниз).
+controls.minPolarAngle = 5 * Math.PI / 180;     // 5° от верха → max pitch = +85°
+controls.maxPolarAngle = 175 * Math.PI / 180;   // 175° от верха → min pitch = -85°
 const player = new PlayerController(controls, camera, ground);
 // ✅ Передаём colliders в player для collision detection (деревья, камни, машины)
 player.colliders = colliders;
@@ -919,6 +998,27 @@ controls.addEventListener('unlock', () => {
     player.enabled = false;
     mouseDown = false;
 });
+
+// ✅ Глобальный helper для ре-захвата курсора (pointer lock) после закрытия меню.
+//    Используется модулями inventory.js / crateUI.js / storage.js:
+//      window.__requestPointerLock()
+//
+//    БЕЗОПАСНЫЙ вызов: ничего не делает, если
+//      - курсор уже захвачен (document.pointerLockElement не null)
+//      - какое-то меню ещё открыто (не хотим захватить курсор поверх открытого UI)
+//
+//    Браузеры требуют user gesture для requestPointerLock(). Этот helper
+//    вызывается из обработчиков keydown/click — это user gesture, так что
+//    controls.lock() сработает. Если вызвать из animation frame без жеста —
+//    браузер молча проигнорирует (или бросит Promise rejection в новых Chrome).
+window.__requestPointerLock = function () {
+    if (document.pointerLockElement) return;  // уже захвачен
+    // Если какое-то меню ещё открыто — не захватываем курсор
+    const anyMenuOpen = inventory.isOpen || isStorageMenuOpen() || isCrateUIOpen()
+        || (settingsUI && settingsUI.isOpen()) || (window.__craftOpen);
+    if (anyMenuOpen) return;
+    try { controls.lock(); } catch (e) { /* ignore */ }
+};
 
 // ============================================================================
 // РЕСПАВН / СМЕРТЬ (синглплеер)
@@ -964,11 +1064,14 @@ function hitTree(tree) {
     if (ud.falling || ud.fallen) return;
     ud.health--; ud.shakeT = 0.35;
     sound.play('chop1', { volume: 0.9 });
-    inventory.addItem('wood', 20); showToast(`🪓 +20 дерева (${ud.health}/${ud.maxHealth})`);
+    // ✅ НОВОЕ: 2-3 дерева за удар (вместо 20). Всего ~70 с дерева (28 ударов).
+    const wood = 2 + Math.floor(Math.random() * 2);   // 2 или 3
+    inventory.addItem('wood', wood);
+    showFloatingPickup('wood', wood);   // ✅ иконка + цифра вместо текста
     if (ud.health <= 0) {
         ud.falling = true; ud.fallT = 0; ud.fallDir = Math.random() > 0.5 ? 1 : -1;
         sound.play('treeFall', { volume: 1 });
-        inventory.addItem('wood', 100); showToast('🌲 Дерево упало! +100 дерева');
+        // ✅ Без бонуса при падении — всё дерево уже получено за удары (≈70)
     }
 }
 function findStone(obj) { let cur = obj; while (cur) { if (cur.userData && cur.userData.isStone) return cur; cur = cur.parent; } return null; }
@@ -978,11 +1081,14 @@ function hitStone(stoneMesh) {
     ud.health--;
     stoneMesh.rotation.x += (Math.random() - 0.5) * 0.15; stoneMesh.rotation.z += (Math.random() - 0.5) * 0.15;
     sound.play('stoneHit1', { volume: 0.9 });
-    inventory.addItem('stone', 15); showToast(`⛏️ +15 камня (${ud.health}/${ud.maxHealth})`);
+    // ✅ НОВОЕ: 2-3 камня за удар (вместо 15). Всего ~50 с камня (20 ударов).
+    const stone = 2 + Math.floor(Math.random() * 2);   // 2 или 3
+    inventory.addItem('stone', stone);
+    showFloatingPickup('stone', stone);   // ✅ иконка + цифра
     if (ud.health <= 0) {
         scene.remove(stoneMesh); const idx = colliders.indexOf(stoneMesh); if (idx > -1) colliders.splice(idx, 1);
         sound.play('stoneBreak', { volume: 1.0 });
-        inventory.addItem('stone', 30); showToast('💥 Камень разрушен! +30 камня');
+        // ✅ Без бонуса при разрушении — весь камень уже получен за удары (≈50)
     }
 }
 // ✅ Удар инструментом (топор → деревьям, кирка → камням).
@@ -1004,13 +1110,11 @@ function hitWithTool() {
         if (bear.dead) {
             const drops = bear.harvest({ playerPos: camera.position });
             if (drops) {
-                const NAMES = { rawMeat: 'Мясо', bone: 'Кости', cloth: 'Ткань', animalFat: 'Животный жир' };
-                let msg = [];
+                // ✅ НОВОЕ: floating popup для каждого ресурса из медведя
                 for (const itemId in drops) {
                     inventory.addItem(itemId, drops[itemId]);
-                    msg.push(`+${drops[itemId]} ${NAMES[itemId] || itemId}`);
+                    showFloatingPickup(itemId, drops[itemId]);
                 }
-                showToast('🐻 ' + msg.join(', '));
             }
         } else {
             bear.damage(45, { playerPos: camera.position });
@@ -1051,10 +1155,12 @@ function fireAK() {
     // ✅ Буст прицела при выстреле (палки раздвигаются)
     recoilBoost(14);
     // ✅ ОТДАЧА КАМЕРЫ зигзагом — накапливаем offset (применяется в animate)
+    //    ✅ ОСЛАБЛЕНО: было 0.035 / 0.022 → стало 0.020 / 0.012 (примерно -43%).
+    //    Камера всё ещё ощутимо подкидывается, но не "уезжает" вверх при очереди.
     recoilShotCount++;
     const rp = RECOIL_PATTERN[(recoilShotCount - 1) % RECOIL_PATTERN.length];
-    recoilPitch += 0.035 * rp.y;    // ✅ УВЕЛИЧЕНО: вверх (сильно)
-    recoilYaw += 0.022 * rp.x;      // ✅ УВЕЛИЧЕНО: вбок (зигзаг)
+    recoilPitch += 0.020 * rp.y;    // вверх (ослаблено)
+    recoilYaw += 0.012 * rp.x;      // вбок зигзаг (ослаблено)
     // ✅ РАЗБРОС пуль — пуля летит не точно по центру, а с отклонением
     const spread = getCurrentSpread();
     const spreadRad = (spread / 200) * 0.18;
@@ -1071,8 +1177,13 @@ function fireAK() {
         const hit = shotIntersects[0];
         const shotBear = findBear(hit.object);
         if (shotBear && !shotBear.dead) shotBear.damage(38, { playerPos: camera.position });
-        const shotBarrel = findBarrel(hit.object);
-        if (shotBarrel) hitBarrel(shotBarrel);
+        // ✅ ФИКС: проверяем ВСЕ hits на бочку (не только первый).
+        //    Бочка в грузовике может быть за стенкой кузова — первый hit будет кузов,
+        //    а бочка будет вторым/третьим hit. Раньше бочка не ломалась.
+        for (const h of shotIntersects) {
+            const shotBarrel = findBarrel(h.object);
+            if (shotBarrel) { hitBarrel(shotBarrel); break; }
+        }
     }
 }
 
@@ -1094,6 +1205,12 @@ function fireBerdana() {
     showToast('🎯 ' + window.__berdanaAmmo + '/' + BERDANA_MAG_SIZE);
     // ✅ Буст прицела при выстреле
     recoilBoost(18);
+    // ✅ НОВОЕ: ОТДАЧА КАМЕРЫ для берданки — очень слабая, слабее АК.
+    //    Берданка — одиночный выстрел, отдача один раз (без зигзага).
+    //    Значения меньше чем у АК (0.020): pitch=0.010, маленький случайный yaw.
+    //    Это даёт ощущение "пинка" винтовки без увода камеры далеко вверх.
+    recoilPitch += 0.010;                              // слабо вверх
+    recoilYaw += (Math.random() - 0.5) * 0.006;        // минимальный случайный вбок
     // ✅ РАЗБРОС пуль (берданка чуть точнее АК)
     const spread = getCurrentSpread();
     const spreadRad = (spread / 200) * 0.12;
@@ -1110,8 +1227,73 @@ function fireBerdana() {
         const hit = shotIntersects[0];
         const shotBear = findBear(hit.object);
         if (shotBear && !shotBear.dead) shotBear.damage(55, { playerPos: camera.position });
-        const shotBarrel = findBarrel(hit.object);
-        if (shotBarrel) hitBarrel(shotBarrel);
+        // ✅ ФИКС: проверяем ВСЕ hits на бочку (бочка в грузовике за стенкой)
+        for (const h of shotIntersects) {
+            const shotBarrel = findBarrel(h.object);
+            if (shotBarrel) { hitBarrel(shotBarrel); break; }
+        }
+    }
+}
+
+// ✅ НОВОЕ: Выстрел из дробовика (помповый, одиночные с кулдауном 0.9с).
+//    2 патрона в обойме. Огромный разброс (дробь), сильная отдача.
+function fireShotgun() {
+    // ✅ НЕЛЬЗЯ СТРЕЛЯТЬ при беге
+    if (player.keys && player.keys.sprint && player.isMoving) {
+        showToast('❌ Нельзя стрелять на бегу!');
+        return;
+    }
+    fpPlayer.triggerShoot();
+    if (!window.__shotgunAmmo) window.__shotgunAmmo = SHOTGUN_MAG_SIZE;
+    if (window.__shotgunAmmo <= 0) {
+        showToast('🔫 Нет патронов! Нажми R чтобы перезарядить');
+        return;
+    }
+    window.__shotgunAmmo--;
+    sound.play('shotgun', { volume: 1.0 });
+    showToast('🔫 ' + window.__shotgunAmmo + '/' + SHOTGUN_MAG_SIZE);
+    // ✅ Буст прицела (дробовик сильно раздвигает палки)
+    recoilBoost(28);
+    // ✅ ОГРОМНАЯ ОТДАЧА КАМЕРЫ — мощный пинок вверх + сильный случайный вбок.
+    //    ✅ ФИКС: при прицеливании (ADS) отдача ЗНАЧИТЕЛЬНО слабее —
+    //    чтобы прицел не "уходил" при стрельбе в прицеле.
+    //    adsAmount: 0 = не целится, 1 = полностью прицелится.
+    //    При ADS отдача уменьшается на 70% (×0.3).
+    const adsAmount = fpPlayer.adsAmount || 0;
+    const recoilMul = 1 - adsAmount * 0.7;   // 1.0 без ADS → 0.3 в полном ADS
+    recoilPitch += 0.060 * recoilMul;                              // сильно вверх (ослаблено в ADS)
+    recoilYaw += (Math.random() - 0.5) * 0.080 * recoilMul;        // сильный случайный вбок (ослаблено в ADS)
+    // ✅ ОГРОМНЫЙ РАЗБРОС — дробь разлетается конусом.
+    //    0.18 радиан ≈ 10.3° — это в 5+ раз больше чем у АК (0.018).
+    //    Пули (дробины) разлетаются случайным образом в этом конусе.
+    const spreadRad = 0.18;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+    // ✅ Дробовик = несколько дробин (pellets) в одном выстреле.
+    //    Пускаем 6 лучей с разным разбросом — каждый может попасть.
+    const PELLETS = 6;
+    for (let i = 0; i < PELLETS; i++) {
+        const rx = (Math.random() - 0.5) * spreadRad * 2;
+        const ry = (Math.random() - 0.5) * spreadRad * 2;
+        const pelletDir = dir.clone()
+            .addScaledVector(right, rx)
+            .addScaledVector(up, ry)
+            .normalize();
+        const shotRay = new THREE.Raycaster(camera.position, pelletDir, 0, 60);   // дробовик — короткая дистанция 60м
+        const shotIntersects = shotRay.intersectObjects(colliders, true);
+        if (shotIntersects.length > 0) {
+            const hit = shotIntersects[0];
+            // Каждая дробина наносит 15 урона (6 × 15 = 90 всего — мощный контакт)
+            const shotBear = findBear(hit.object);
+            if (shotBear && !shotBear.dead) shotBear.damage(15, { playerPos: camera.position });
+            // ✅ ФИКС: проверяем ВСЕ hits на бочку (бочка в грузовике за стенкой)
+            for (const h of shotIntersects) {
+                const shotBarrel = findBarrel(h.object);
+                if (shotBarrel) { hitBarrel(shotBarrel); break; }
+            }
+        }
     }
 }
 
@@ -1142,7 +1324,8 @@ function pickScrap(scrapGroup) {
     if (ud.picked) return;
     ud.picked = true;
     const amount = Math.floor(Math.random() * 7) + 2;
-    inventory.addItem('scrap', amount); showToast(`🔩 Подобран скрап! (+${amount})`);
+    inventory.addItem('scrap', amount);
+    showFloatingPickup('scrap', amount);   // ✅ иконка скрапа + цифра
     scene.remove(scrapGroup); scrapGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     if (window.worldScraps) { const idx = window.worldScraps.findIndex(s => s.group === scrapGroup); if (idx > -1) window.worldScraps.splice(idx, 1); }
 }
@@ -1153,12 +1336,12 @@ function breakBarrel(barrelMesh) {
     const debris = createBarrelDebris(scene, pos.x, pos.y + 0.4, pos.z, ud.barrelColor);
     if (!window.barrelDebris) window.barrelDebris = [];
     window.barrelDebris.push({ debris, life: 0, maxLife: 3.5, onGround: false });
-    const scrapData = spawnScrap(scene, pos.x, pos.y + 0.5, pos.z);
+    const scrapData = spawnScrap(scene, pos.x, pos.y + 0.5, pos.z, getGroundHeight);
     scrapData.id = 'scrap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
     if (!window.worldScraps) window.worldScraps = [];
     window.worldScraps.push(scrapData);
     for (const mesh of scrapData.meshes) colliders.push(mesh);
-    showToast('💥 Бочка разрушена! Скрап выпал');
+    // ✅ Убран showToast — вместо него floating popup при подборе скрапа (F)
     const parent = barrelMesh.parent;
     if (parent) parent.remove(barrelMesh);
     const idx = colliders.indexOf(barrelMesh);
@@ -1279,6 +1462,12 @@ window.addEventListener('mousedown', (e) => {
                 fireBerdana();
                 berdanaCooldown = BERDANA_COOLDOWN;
             }
+        } else if (currentWeapon === 'shotgun') {
+            // ✅ НОВОЕ: Дробовик — одиночные выстрелы с кулдауном 0.9 сек
+            if (shotgunCooldown <= 0) {
+                fireShotgun();
+                shotgunCooldown = SHOTGUN_FIRE_COOLDOWN;
+            }
         }
     }
 });
@@ -1331,10 +1520,31 @@ window.addEventListener('keydown', (e) => {
         ray.setFromCamera(screenCenter, camera);
         ray.far = 4.0;
 
+        // ✅ НОВОЕ: Scrap pickup на F — raycast ищет скрап в радиусе 3м.
+        //    Если нашли — подбираем (2-8 кусков скрапа в инвентарь).
+        const scrapHits = ray.intersectObjects(scene.children, true);
+        for (const hit of scrapHits) {
+            if (hit.distance > 3.0) break;
+            const scrap = findScrap(hit.object);
+            if (scrap && !scrap.userData.picked) {
+                pickScrap(scrap);
+                e.stopImmediatePropagation();
+                return;
+            }
+        }
+
         // Сундуки
         const storageHit = storageWorld.tryInteract(ray, 3.5);
         if (storageHit) {
             openStorageMenu(storageHit, inventory);
+            // ✅ Останавливаем дальнейшую диспетчеризацию keydown, иначе
+            //    глобальный handler в storage.js (__storageKeyHandler) сработает
+            //    на ТОМ ЖЕ нажатии F, которым мы только что открыли сундук,
+            //    и сразу его закроет (storage handler проверяет isStorageOpen —
+            //    а оно уже true после openStorageMenu). Это и был баг:
+            //    первый сундук открывался (handler ещё не зарегистрирован),
+            //    а второй и последующие — мигали и "не открывались".
+            e.stopImmediatePropagation();
             return;
         }
         // ✅ Ящики (военные/деревянные/инструментальные/toolbox) — открытие на F
@@ -1347,6 +1557,14 @@ window.addEventListener('keydown', (e) => {
                 // ✅ Всегда открываем UI (даже пустой ящик — покажет пустые слоты)
                 openCrateUI(crate, inventory);
                 if (document.pointerLockElement) document.exitPointerLock();
+                // ✅ Аналогично сундукам: останавливаем диспетчеризацию, иначе
+                //    __crateKeyHandler в crateUI.js сразу закроет только что
+                //    открытый ящик (handler срабатывает на том же keydown event).
+                //    Первый ящик работал только потому, что handler регистрировался
+                //    ВНУТРИ openCrateUI — и не вызывался для текущего event'а
+                //    (addEventListener во время dispatch не вызывается для этого event'а).
+                //    На втором и последующих ящиках handler уже активен — и закрывает.
+                e.stopImmediatePropagation();
                 return;
             }
         }
@@ -1478,15 +1696,30 @@ window.addEventListener('keydown', (e) => {
     // 4. Q — крафт-меню (пустое)
     if (e.code === 'KeyQ') { e.preventDefault(); craftMenu.toggle(); return; }
 
-    // ✅ R — перезарядка АК-47 или берданки
-    if (e.code === 'KeyR' && (currentWeapon === 'ak47' || currentWeapon === 'berdana')) {
+    // ✅ НОВОЕ: M — открыть/закрыть карту мира
+    if (e.code === 'KeyM') {
+        e.preventDefault();
+        mapUI.toggle();
+        // ✅ Если карта открылась — выходим из pointer lock (чтобы курсор был виден)
+        if (mapUI.isOpen) {
+            if (document.pointerLockElement) document.exitPointerLock();
+        }
+        return;
+    }
+
+    // ✅ R — перезарядка АК-47, берданки или дробовика
+    if (e.code === 'KeyR' && (currentWeapon === 'ak47' || currentWeapon === 'berdana' || currentWeapon === 'shotgun')) {
         e.preventDefault();
         if (currentWeapon === 'ak47') {
             window.__akAmmo = AK_MAG_SIZE;
             showToast('🔫 Перезарядка АК: ' + AK_MAG_SIZE + '/' + AK_MAG_SIZE);
-        } else {
+        } else if (currentWeapon === 'berdana') {
             window.__berdanaAmmo = BERDANA_MAG_SIZE;
             showToast('🎯 Перезарядка берданки: ' + BERDANA_MAG_SIZE + '/' + BERDANA_MAG_SIZE);
+        } else if (currentWeapon === 'shotgun') {
+            // ✅ НОВОЕ: перезарядка дробовика — 2 патрона
+            window.__shotgunAmmo = SHOTGUN_MAG_SIZE;
+            showToast('🔫 Перезарядка дробовика: ' + SHOTGUN_MAG_SIZE + '/' + SHOTGUN_MAG_SIZE);
         }
         return;
     }
@@ -1892,6 +2125,41 @@ function animate() {
             camera.position.x = feet.x; camera.position.z = feet.z;
             if (res.grounded && res.ground !== null) { camera.position.y = res.ground + 1.7; player.velocity.y = 0; player.isOnGround = true; }
         }
+        // ✅ НОВОЕ: proper AABB-коллизия для всех машин (грузовики, легковушки, багги).
+        //    Раньше player.js проверял коллизию с машинами как «точка + радиус 1.5м» —
+        //    из-за этого грузовик ощущался как один большой куб (нельзя подойти вплотную,
+        //    нельзя залезть). Теперь у каждого транспорта есть rig.resolve() (настроили
+        //    в vehicles.js / buggy.js через attachCollision), который делает proper
+        //    AABB с Y-диапазоном и step-up. Можно подойти вплотную и запрыгнуть на крышу.
+        //    Багги пропускается если игрок сейчас в ней сидит (inBuggy=true) — иначе
+        //    коллизия дёргала бы камеру во время езды.
+        if (!inBuggy) {
+            for (const v of vehicles) {
+                if (!v || !v.resolve) continue;
+                const feet = new THREE.Vector3(camera.position.x, camera.position.y - 1.7, camera.position.z);
+                const res = v.resolve(feet, 0.35, 1.8, 0.6);
+                camera.position.x = feet.x; camera.position.z = feet.z;
+                if (res.grounded && res.ground !== null) {
+                    camera.position.y = res.ground + 1.7;
+                    player.velocity.y = 0;
+                    player.isOnGround = true;
+                }
+            }
+            // ✅ Багги на заправках (allBuggies — массив всех созданных багги).
+            //    Когда игрок не за рулём — тоже обрабатываем коллизию, чтобы
+            //    можно было подойти к багги вплотную и запрыгнуть на капот.
+            for (const bv of allBuggies) {
+                if (!bv || !bv.resolve) continue;
+                const feet = new THREE.Vector3(camera.position.x, camera.position.y - 1.7, camera.position.z);
+                const res = bv.resolve(feet, 0.35, 1.8, 0.6);
+                camera.position.x = feet.x; camera.position.z = feet.z;
+                if (res.grounded && res.ground !== null) {
+                    camera.position.y = res.ground + 1.7;
+                    player.velocity.y = 0;
+                    player.isOnGround = true;
+                }
+            }
+        }
         // === ОТДАЧА: плавный возврат recoil к 0 ===
         const recoverFactor = Math.max(0, 1 - 4 * delta);  // 4 = скорость возврата
         recoilPitch *= recoverFactor;
@@ -1903,13 +2171,81 @@ function animate() {
         if (recoilPitch > 0.0001 || Math.abs(recoilYaw) > 0.0001) {
             camera.rotateX(recoilPitch);   // локальная ось X (вверх/вниз)
             camera.rotateY(recoilYaw);     // локальная ось Y (влево/вправо)
-            // ✅ ОГРАНИЧЕНИЕ камеры: pitch не больше ±85° (как обычный взгляд верх/низ)
-            //    Чтобы от отдачи нельзя было сделать 360° сальто
-            const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
-            const maxPitch = 85 * Math.PI / 180;  // 85° в радианах
-            if (e.x > maxPitch) e.x = maxPitch;
-            if (e.x < -maxPitch) e.x = -maxPitch;
-            camera.quaternion.setFromEuler(e);
+
+            // ✅ НАДЁЖНОЕ ограничение pitch камеры (±85°).
+            //
+            //    Прошлая реализация через THREE.Euler.setFromQuaternion(quat, 'YXZ')
+            //    имела БАГ gimbal lock: когда реальный pitch переходил через ±90°,
+            //    Euler extraction "оборачивал" угол. Например, реальный pitch = +95°
+            //    извлекался как e.x = +85° (с дополнительным сдвигом yaw на π),
+            //    и clamp `if (e.x > maxPitch)` НЕ срабатывал — камера оставалась
+            //    перевёрнутой назад и смотрела в противоположную сторону.
+            //    При долгой стрельбе очередью из АК-47 отдача постепенно накапливалась,
+            //    доходила до 90°, и камера "ломалась" — игра становилась неиграбельной.
+            //
+            //    Надёжный способ (без gimbal lock):
+            //    1. Используем WORLD FORWARD VECTOR камеры.
+            //       forward.y = sin(pitch), и эта формула НЕ имеет сингулярности.
+            //    2. Чтобы отличить "85° вверх" (норм) от "95° переворот" (баг),
+            //       проверяем WORLD UP VECTOR камеры (local +Y после quaternion).
+            //       Если up.y < 0 — камера перевёрнута, и мы хард-форсим pitch
+            //       в ±maxPitch, восстанавливая правильный yaw.
+
+            const maxPitch = 85 * Math.PI / 180;        // ≈ 1.4835 рад
+
+            // Текущее направление взгляда в мире (camera local -Z, нормализованное)
+            const fwd = new THREE.Vector3();
+            camera.getWorldDirection(fwd);
+
+            // Локальный UP камеры в мире (local +Y transformed by camera.quaternion).
+            // Если up.y < 0 — камера перевёрнута (после ±90°).
+            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+            let finalPitch, finalYaw;
+
+            if (up.y >= 0) {
+                // ✅ Нормальная ориентация: камера НЕ перевёрнута.
+                // Извлекаем pitch из fwd.y — это надёжно, без gimbal lock.
+                // asin возвращает значение в [-π/2, +π/2].
+                const pitch = Math.asin(Math.max(-1, Math.min(1, fwd.y)));
+                finalPitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+                // Yaw из горизонтальной проекции fwd.
+                // Для Euler(pitch, yaw, 0, 'YXZ'): forward = (-sin(yaw)*cos(pitch), sin(pitch), -cos(yaw)*cos(pitch)).
+                // Отсюда: atan2(-fwd.x, -fwd.z) = yaw (когда cos(pitch) > 0).
+                if (Math.abs(fwd.x) + Math.abs(fwd.z) > 1e-6) {
+                    finalYaw = Math.atan2(-fwd.x, -fwd.z);
+                } else {
+                    // Камера смотрит почти вертикально — горизонтальной проекции нет,
+                    // берём yaw из текущего Euler (тут он корректен даже при gimbal lock).
+                    const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+                    finalYaw = e.y;
+                }
+            } else {
+                // ⚠️ Перевёрнутая ориентация: камера прошла через ±90°.
+                // fwd.y тут НЕ информативен (sin(95°) = sin(85°)), поэтому
+                // определяем направление по знаку fwd.y:
+                //   fwd.y >= 0 → смотрели ВВЕРХ и перешли через +90° → clamp в +maxPitch
+                //   fwd.y <  0 → смотрели ВНИЗ и перешли через -90° → clamp в -maxPitch
+                const sign = fwd.y >= 0 ? 1 : -1;
+                finalPitch = sign * maxPitch;
+                // При перевороте горизонтальная проекция fwd сдвинута на π.
+                // Восстанавливаем правильный yaw.
+                if (Math.abs(fwd.x) + Math.abs(fwd.z) > 1e-6) {
+                    const flippedYaw = Math.atan2(-fwd.x, -fwd.z);
+                    finalYaw = flippedYaw + Math.PI;
+                    // Нормализуем в [-π, π]
+                    finalYaw = Math.atan2(Math.sin(finalYaw), Math.cos(finalYaw));
+                } else {
+                    const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+                    finalYaw = e.y + Math.PI;
+                    finalYaw = Math.atan2(Math.sin(finalYaw), Math.cos(finalYaw));
+                }
+            }
+
+            // Применяем итоговую ориентацию: roll = 0 (всегда для FPS).
+            // Это также гарантирует, что камера не "наклоняется вбок" после
+            // множества выстрелов с зигзагом (в YXZ порядке roll = e.z).
+            camera.quaternion.setFromEuler(new THREE.Euler(finalPitch, finalYaw, 0, 'YXZ'));
         }
     }
 
@@ -1954,6 +2290,13 @@ function animate() {
     buildingSystem.update(delta);
     storageWorld.update(delta);
     craftMenu.update(delta);
+    mapUI.update();   // ✅ НОВОЕ: обновление маркера на карте (если открыта)
+    // ✅ НОВОЕ: обновление ящиков — проверка пустых + таймеры респавна.
+    //    Внутри crateManager.update(delta):
+    //      - если ящик пуст → скрывается (visible=false) + запускается таймер
+    //      - через 5 мин (wooden/tool/toolbox) или 25 мин (military) → респавн
+    //        с НОВЫМ рандомным лутом (rollLoot).
+    crateManager.update(delta);
 
     // 🐻 Медведи: ИИ, анимации, атаки
     bearManager.update(delta, camera.position, {
@@ -1968,6 +2311,7 @@ function animate() {
     if (toolCooldown > 0)    toolCooldown    = Math.max(0, toolCooldown - delta);
     if (akFireCooldown > 0)  akFireCooldown  = Math.max(0, akFireCooldown - delta);
     if (berdanaCooldown > 0) berdanaCooldown = Math.max(0, berdanaCooldown - delta);
+    if (shotgunCooldown > 0) shotgunCooldown = Math.max(0, shotgunCooldown - delta);   // ✅ НОВОЕ: дробовик
 
     // ✅ Автоогонь АК-47 при зажатой ЛКМ
     if (mouseDown && currentWeapon === 'ak47' && akFireCooldown <= 0 && !window.buildMenuOpen && document.pointerLockElement) {
@@ -1986,8 +2330,8 @@ function animate() {
         });
     }
 
-    // ✅ Обновление динамического прицела (точка + 4 палки)
-    if (currentWeapon === 'ak47' || currentWeapon === 'berdana') {
+    // ✅ Обновление динамического прицела (точка + 4 палки) — для АК, берданки и дробовика
+    if (currentWeapon === 'ak47' || currentWeapon === 'berdana' || currentWeapon === 'shotgun') {
         const isMoving = player.velocity.length() > 0.5;
         const isSprinting = isMoving && (player.keys && player.keys.sprint);
         updateCrosshair(delta, {

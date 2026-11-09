@@ -28,6 +28,8 @@ const CSS = `
 
 let panelEl = null, crateGridEl = null, invGridEl = null;
 let activeCrate = null, playerInv = null, isOpen = false;
+let lastOpenTime = 0;  // ✅ timestamp последнего openCrateUI — для защиты от
+                       //    немедленного закрытия на том же keydown event'е
 let dragData = null, dragGhost = null;
 
 function ensurePanel() {
@@ -241,6 +243,7 @@ export function openCrateUI(crate, inventory, callbacks = {}) {
   crate._slots = null;
   isOpen = true;
   window.__isCrateOpen = true;
+  lastOpenTime = performance.now();  // ✅ запоминаем когда открыли
   renderCrateUI();
   panelEl.classList.add("open");
   if (document.pointerLockElement) document.exitPointerLock();
@@ -252,7 +255,18 @@ export function openCrateUI(crate, inventory, callbacks = {}) {
   if (!window.__crateKeyHandler) {
     window.__crateKeyHandler = (e) => {
       if (!isOpen) return;
-      if (e.code === 'Escape' || e.code === 'KeyF') {
+      if (e.code === 'Escape') {
+        e.preventDefault();
+        closeCrateUI();
+      } else if (e.code === 'KeyF') {
+        // ✅ Защита от закрытия на том же keypress, которым ящик открыли.
+        //    main.js вызывает openCrateUI на F → isOpen становится true →
+        //    тот же keydown проходит к этому handler'у и сразу бы закрыл ящик.
+        //    main.js останавливает диспетчеризацию через stopImmediatePropagation,
+        //    но это запасная защита (defence in depth) — если по какой-то
+        //    причине stopImmediatePropagation не сработал (старый браузер,
+        //    capture-фаза и т.п.), игнорируем F в первые 300мс после открытия.
+        if (performance.now() - lastOpenTime < 300) return;
         e.preventDefault();
         closeCrateUI();
       }
@@ -276,9 +290,15 @@ export function closeCrateUI() {
   if (dragGhost) { dragGhost.remove(); dragGhost = null; }
   const hb = document.getElementById('hotbar');
   if (hb) hb.style.display = '';
-  // ✅ НЕ вызываем requestPointerLock и НЕ показываем overlay
-  //    Игра просто ждёт — игрок кликнет на canvas чтобы продолжить
-  //    (controls.lock сработает при клике на overlay)
+  // ✅ Восстанавливаем pointer lock после закрытия меню ящика.
+  //    Раньше тут был комментарий "не вызываем requestPointerLock" —
+  //    но это и был баг: после закрытия ящика курсор оставался свободным,
+  //    overlay НЕ показывался (т.к. в 'unlock' handler мы подавляем его
+  //    когда меню открыто), и игрок не мог вернуться в игру без лишнего клика.
+  //    Helper проверит, что других меню нет, и безопасно вызовет controls.lock().
+  if (typeof window.__requestPointerLock === 'function') {
+    window.__requestPointerLock();
+  }
 }
 
 export function isCrateUIOpen() { return isOpen; }

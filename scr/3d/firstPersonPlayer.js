@@ -10,7 +10,7 @@
 //    - 'axe'     : каменный топор. Анимации: idle, atk1, atk2. Ломает деревья.
 //    - 'pickaxe' : каменная кирка. ТА ЖЕ анимация и хват что у топора. Ломает камни.
 //    - 'ak47'    : автомат АК-47. Позы: idle, run, shoot (отдача).
-//    - 'berdana' : винтовка-берданка. ПОЗЫ как у АК (idle/run/shoot).
+//    - 'berdana' : винтовка-берданка. Правая рука на рукояти, левая на стволе, бег/выстрел/прицел как у АК.
 //                  Текстуры PBR применяются вручную (FBX не содержал ссылок).
 //
 //  API:
@@ -21,24 +21,33 @@
 //    .triggerSwing(type)          — для топора/кирки ('atk1' | 'atk2')
 //    .triggerShoot()              — для АК/берданки (мягкая отдача + дрожь рук)
 //    .setRunning(bool)            — для АК/берданки (прижимается к груди при беге)
-//    .setAiming(bool) / ПКМ       — АК: прицеливание (мушка по центру экрана); .adsAmount = 0..1
+//    .setAiming(bool) / ПКМ       — АК и берданка: прицеливание (мушка по центру экрана); .adsAmount = 0..1
 //    .update(dt, opts)            — обновление позы (без рендера)
 //    .renderOverlay()             — рендер рук поверх (вызывается ИЗ main.js)
 // ============================================================================
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';   // ✅ для дробовика (FBX-модель)
 
 const PLAYER_MODEL_PATH   = './scr/3d/player_claude.glb';
 const AXE_MODEL_PATH      = './scr/3d/axe_claude.glb';
 const PICKAXE_MODEL_PATH  = './scr/3d/stone_pickaxe.glb';
 const AK47_MODEL_PATH     = './scr/3d/ak47.glb';
 const BERDANA_MODEL_PATH  = './scr/3d/berdana.glb';
+// ✅ ДРОБОВИК — FBX, грузим через FBXLoader
+const SHOTGUN_MODEL_PATH  = './scr/3d/shotgun.fbx';
 // ✅ PBR-текстуры берданки (FBX не содержал ссылок на них, применяем вручную)
 const BERDANA_TEX_BASECOLOR = './scr/3d/berdana_textures/BaseColor.png';
 const BERDANA_TEX_NORMAL    = './scr/3d/berdana_textures/Normal.png';
 const BERDANA_TEX_ROUGHNESS = './scr/3d/berdana_textures/Roughness.png';
 const BERDANA_TEX_METALLIC  = './scr/3d/berdana_textures/Metallic.png';
+// ✅ PBR-текстуры дробовика (FBX без ссылок, применяем вручную — как у берданки)
+const SHOTGUN_TEX_BASECOLOR = './scr/3d/shotgun_textures/BaseColor.png';
+const SHOTGUN_TEX_NORMAL    = './scr/3d/shotgun_textures/Normal.png';
+const SHOTGUN_TEX_ROUGHNESS = './scr/3d/shotgun_textures/Roughness.png';
+const SHOTGUN_TEX_METALLIC  = './scr/3d/shotgun_textures/Metallic.png';
+const SHOTGUN_TEX_AO        = './scr/3d/shotgun_textures/Mixed_AO.png';
 
 const D = Math.PI / 180;
 
@@ -50,6 +59,9 @@ const ARMS_SCALE = 1.4;
 
 // ✅ Хват КИРКИ — такой же как у топора (модель сделана по тем же пропорциям)
 const GRIP_PICKAXE = Object.assign({}, GRIP);
+// ✅ Длина кирки в руке (м) — как у топора (0.55). Больше = кирка крупнее.
+const PICKAXE_TARGET_LEN = 0.55;   // = AXE_TARGET_LEN (размер как у топора)
+const PICKAXE_PIVOT_Y = 0;          // подвинуть кирку по рукояти (в единицах модели после масштаба): + вверх, − вниз
 
 // ✅ Хват АК-47 — настройки из студии (правая рука на пистолете)
 const GRIP_AK = {
@@ -59,13 +71,31 @@ const GRIP_AK = {
     sR: 0.0,      // поворот по Y в кисти (град)
 };
 
-// ✅ Хват БЕРДАНКИ — идентичен АК (размер как у АК, не меньше)
-const GRIP_BERDANA = Object.assign({}, GRIP_AK, {
-    sS: GRIP_AK.sS,    // ← такой же как у АК
-    sX: GRIP_AK.sX,
-    sP: GRIP_AK.sP,
-    sR: GRIP_AK.sR,
-});
+// ✅ Хват БЕРДАНКИ — правая рука лежит на ПИСТОЛЕТНОЙ РУКОЯТИ (деталь handle_ в berdana.glb).
+//    Размер как у АК. grip — центр рукояти в координатах модели berdana.glb (дуло = +Z, верх = +Y).
+const GRIP_BERDANA = {
+    sS: GRIP_AK.sS,                        // размер (как у АК)
+    sA: 0.50,                              // где на ладони рукоять: доля длины ладони от запястья
+    sP: 0.032,                             // зазор ладонь ↔ рукоять (больше = рука дальше от рукояти)
+    sR: 0,                                 // поворот по Y в кисти (град)
+    grip: { x: 0, y: 0.0206, z: -0.0160 }, // центр рукояти
+};
+
+// ✅ ЛЕВАЯ РУКА НА СТВОЛЕ БЕРДАНКИ (хват «C-grip» снизу: ладонь под стволом, пальцы обхватывают его справа).
+//    Рука привязана к самому оружию. Координаты — в единицах модели berdana.glb.
+const GRIP_BERDANA_LEFT = {
+    enabled:    true,    // false → старая поза левой руки
+    zPref:      0.030,   // куда кладём руку вдоль ствола (больше = ближе к дулу)
+    zRear:      0.022,   // самая задняя точка (перед ствольной коробкой, ладонь не должна задеть её), если рука не достаёт
+    yCenter:    0.0349,  // высота оси ствола
+    fingerAng:  50,      // угол пальцев от ствола вправо: 0 = вдоль ствола, 90 = поперёк
+    palmTilt:   0.30,    // наклон ладони вправо (к стволу)
+    palmThick:  0.20,    // зазор ладонь↔ствол (доли длины ладони)
+    palmFrac:   0.50,    // центр ладони от запястья (доля длины ладони)
+    curl:       0.75,    // сжатие пальцев (ствол тонкий — обхват сильнее, чем у АК)
+    thumb:      0.25,
+    twistShare: 0.5,
+};
 
 // ✅ ЛЕВАЯ РУКА НА ЦЕВЬЕ АК-47 (хват «C-grip»: ладонь снизу, большой палец слева вдоль цевья,
 //    четыре пальца обхватывают цевьё справа). Рука привязана к САМОМУ автомату,
@@ -96,6 +126,19 @@ const ADS_AK = {
     fov:   55,       // FOV 55 — уже, автомат мельче
     worldFov: 0.82,  // множитель FOV основной камеры при прицеливании
     speed: 11,       // скорость входа/выхода из прицела
+};
+
+// ✅ ПРИЦЕЛИВАНИЕ БЕРДАНКИ (ПКМ). Координаты — в модели berdana.glb (дуло = +Z, верх = +Y):
+//    целик — деталь aim_ (верх y≈0.0391 на z≈-0.0144), мушка — вершина ствола (y≈0.0390 на z≈0.050).
+//    Берданка короче «в руке»: рукоять почти под целиком, поэтому глаз ближе, чем у АК (dist меньше),
+//    иначе левая рука не достанет до ствола.
+const ADS_BERDANA = {
+    rear:  { y: 0.0399, z: -0.0144 },   // чуть выше целика (смотрим поверх него)
+    front: { y: 0.0388, z: 0.0505 },    // мушка (чуть ниже вершины, как у АК — мушка над перекрестием)
+    dist:  0.28,     // расстояние «глаз → целик», м (меньше = оружие ближе/крупнее; больше 0.30 — левая рука не достанет до ствола)
+    fov:   60,       // FOV камеры рук при прицеливании
+    worldFov: 0.82,  // множитель FOV основной камеры
+    speed: 11,
 };
 // Камера рук (должна совпадать с renderOverlay)
 const HANDS_CAM_POS    = new THREE.Vector3(0, 1.7, 0);
@@ -157,20 +200,126 @@ const F_RUN_AK = Object.assign({}, FIDLE_AK, {
     sx: 3, sy: -4,
 });
 
-// Старые позы бега/выстрела — их использует БЕРДАНКА (без изменений)
-const F_RUN_BERDANA = Object.assign({}, IDLE, {
-    sx: 0, hx: 0,
-    rx: 0.10, ry: 0.05, rz: 0.85, rphi: 60, ryaw: 0, roll: 90, curl: 1.0, thumb: 0.9,
-    lx: 0.05, ly: -0.10, lz: 0.55, lcurl: 0.9,
-    ltx: 25, ltk: 35, rtx: -25, rtk: -35,
-    sy: -8, sx: 4,
+// ✅ БЕРДАНКА: idle / бег. Ориентация ствола задана явно (gw=1), как у бега АК.
+//    Выстрел = idle + мягкая отдача/дрожь (см. _gunPose / triggerShoot).
+const FIDLE_BERDANA = Object.assign({}, FIDLE_AK, {
+    rx: 0.10, ry: 0.16, rz: 0.42,                    // правая кисть (на рукояти) относительно плеча
+    gw: 1, gyaw: -6, gpitch: 4, groll: 0,            // ствол чуть влево (к центру) и чуть вверх
+    curl: 0.45, thumb: 0.30,
 });
-const F_SHOOT_BERDANA = Object.assign({}, IDLE, {
-    sx: 0, hx: 0,
-    rx: 0.35, ry: 0.10, rz: 0.55, rphi: 95, ryaw: 0, roll: 90, curl: 1.0, thumb: 0.9,
-    lx: 0.45, ly: 0.30, lz: 0.90, lcurl: 0.5,
-    lpalm: 1,
+const F_RUN_BERDANA = Object.assign({}, FIDLE_BERDANA, {
+    rx: -0.12, ry: -0.04, rz: 0.38,                  // прижата к груди
+    gw: 1, gyaw: -22, gpitch: 38, groll: 0,          // дуло вверх и влево
+    curl: 0.55, thumb: 0.40,
+    sx: 3, sy: -4,
 });
+
+// ✅ ДРОБОВИК (shotgun.fbx) — ОДНА РУКА.
+//    Геометрия модели (локальные координаты FBX, до Lcl-поворота): X = вдоль оружия (ДУЛО в −X ≈ −5.9, приклад в +X ≈ +7.1),
+//    Z = ВВЕРХ (верх ствола ≈ +1.0, мушка ≈ 1.27, приклад загибается вниз до −2.9), Y = вбок. Длина 13.014 ед. = 0.85 м.
+//    Все точки ниже (grip / ads) задаются именно в этих координатах {x, y, z}.
+const SG_U = 0.85 / 13.014;        // метров на 1 ед. модели (длина 13.014 → 0.85 м)
+const GRIP_SHOTGUN = {
+    sS: 0.72,                      // размер в руке (меньше = дробовик целиком в кадре, больше = крупнее)
+    sA: 0.50,                      // где на ладони «шейка» приклада (доля длины ладони от запястья)
+    sP: 0.035,                     // зазор ладонь ↔ шейка приклада
+    sR: 0,                         // поворот по Y в кисти (град)
+    grip: { x: 3.2, y: 0, z: -0.85 },   // «шейка» приклада (за ствольной коробкой) — сюда ложится правая ладонь
+};
+
+// Левая рука НЕ держит цевьё (enabled:false) — дробовик в одной руке.
+const GRIP_SHOTGUN_LEFT = {
+    enabled:    false,
+    zPref:      0, zRear: 0, yCenter: 0,
+    fingerAng:  55, palmTilt: 0.25, palmThick: 0.20, palmFrac: 0.50,
+    curl:       0.55, thumb: 0.22, twistShare: 0.5,
+};
+
+// Прицеливание: целик — верх ствольной коробки/гребень (x≈1.6, z≈1.33), мушка — бусинка на дуле (x≈−5.9, z≈1.25).
+// dist — «глаз → целик», м. Больше = камера дальше от оружия (не заходит внутрь), но правая рука должна доставать.
+const ADS_SHOTGUN = {
+    rear:  { x: 1.6,  y: 0, z: 1.33 },
+    front: { x: -5.9, y: 0, z: 1.25 },
+    dist:  0.55,
+    fov:   58,
+    worldFov: 0.88,
+    speed: 11,
+};
+
+// Поза idle: кисть в правом нижнем углу, дуло чуть влево (к центру) и вверх.
+// Левая рука — «расслабленная» (lx/ly/lz): висит вниз, вне кадра.
+const FIDLE_SHOTGUN = Object.assign({}, FIDLE_AK, {
+    rx: 0.45, ry: -0.10, rz: 0.60,                   // ← положение: rx правее, ry ниже, rz дальше вперёд
+    gw: 1, gyaw: -18, gpitch: 12, groll: 0,          // ← направление ствола: gyaw влево(−), gpitch вверх(+)
+    curl: 0.45, thumb: 0.25,
+    lx: -0.25, ly: -0.85, lz: 0.12, lcurl: 0.35, lpalm: 0,
+});
+// Бег с дробовиком — прижат к груди, дуло вверх-влево.
+const F_RUN_SHOTGUN = Object.assign({}, FIDLE_SHOTGUN, {
+    rx: -0.10, ry: -0.04, rz: 0.40,
+    gw: 1, gyaw: -22, gpitch: 38, groll: 0,
+    curl: 0.60, thumb: 0.45,
+    sx: 3, sy: -4,
+});
+
+// ✅ Авто-подгонка кирки под топор. Модель кирки (stone_pickaxe.glb) может иметь любой pivot/ориентацию,
+//    поэтому: находим длинную ось (рукоять), конец с головой (там шире), ось головы — и приводим к виду топора:
+//    рукоять вдоль +Y, голова вверху, ось головы вдоль X, НИЖНИЙ КОНЕЦ РУКОЯТИ в (0,0,0) — как у axe_claude.glb
+//    (там pivot = низ рукояти, рука берёт ручку на ~25% от низа). Длина = targetLen (как у топора).
+function fitPickaxeLikeAxe(proto, targetLen) {
+    proto.updateMatrixWorld(true);
+    const inv = proto.matrixWorld.clone().invert();
+    const P = [], v = new THREE.Vector3();
+    proto.traverse((o) => {
+        if (!(o.isMesh && o.geometry && o.geometry.attributes.position)) return;
+        const a = o.geometry.attributes.position;
+        const m = new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld);
+        for (let i = 0; i < a.count; i++) { v.fromBufferAttribute(a, i).applyMatrix4(m); P.push(v.x, v.y, v.z); }
+    });
+    const n = P.length / 3;
+    if (n < 4) return;
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) {
+        const c = P[i * 3 + k]; if (c < mn[k]) mn[k] = c; if (c > mx[k]) mx[k] = c;
+    }
+    const size = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+    const L = size.indexOf(Math.max(size[0], size[1], size[2]));       // длинная ось = рукоять
+    if (size[L] < 1e-6) return;
+    const o1 = (L + 1) % 3, o2 = (L + 2) % 3;
+    // боковой размах у двух концов рукояти (первые/последние 25%)
+    const span = (lo, hi) => {
+        const a = [Infinity, Infinity], b = [-Infinity, -Infinity];
+        for (let i = 0; i < n; i++) {
+            const f = (P[i * 3 + L] - mn[L]) / size[L];
+            if (f < lo || f > hi) continue;
+            const x1 = P[i * 3 + o1], x2 = P[i * 3 + o2];
+            if (x1 < a[0]) a[0] = x1; if (x1 > b[0]) b[0] = x1;
+            if (x2 < a[1]) a[1] = x2; if (x2 > b[1]) b[1] = x2;
+        }
+        return [b[0] - a[0], b[1] - a[1]];
+    };
+    const lowS = span(0, 0.25), highS = span(0.75, 1);
+    const headHigh = Math.max(highS[0], highS[1]) >= Math.max(lowS[0], lowS[1]);   // голова на верхнем конце оси?
+    const headS = headHigh ? highS : lowS;
+    const latAxis = headS[0] >= headS[1] ? o1 : o2;                    // ось головы (самая широкая)
+    const ex = new THREE.Vector3().setComponent(latAxis, 1);
+    const ey = new THREE.Vector3().setComponent(L, headHigh ? 1 : -1);
+    const ez = new THREE.Vector3().crossVectors(ex, ey);
+    proto.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ex, ey, ez).transpose());
+    const sc = targetLen / size[L];
+    proto.scale.setScalar(sc);
+    // нижний конец рукояти (центр сечения) → в начало координат
+    const endV = headHigh ? mn[L] : mx[L];
+    const end = new THREE.Vector3(); let cnt = 0, s1 = 0, s2 = 0;
+    for (let i = 0; i < n; i++) {
+        const f = (P[i * 3 + L] - mn[L]) / size[L];
+        if ((headHigh && f <= 0.08) || (!headHigh && f >= 0.92)) { s1 += P[i * 3 + o1]; s2 += P[i * 3 + o2]; cnt++; }
+    }
+    end.setComponent(L, endV); end.setComponent(o1, cnt ? s1 / cnt : 0); end.setComponent(o2, cnt ? s2 / cnt : 0);
+    proto.position.copy(end.multiplyScalar(sc).applyQuaternion(proto.quaternion).negate());
+    proto.updateMatrixWorld(true);
+    console.log('[FP] Кирка: длинная ось=' + 'xyz'[L] + ', голова на ' + (headHigh ? '+' : '−') + ', ось головы=' + 'xyz'[latAxis] + ', размеры=' + size.map((q) => q.toFixed(3)).join('/'));
+}
 
 function lerpP(a, b, t) {
     const o = {};
@@ -274,6 +423,7 @@ export class FirstPersonPlayer {
 
     _load() {
         const loader = new GLTFLoader();
+        const fbxLoader = new FBXLoader();   // ✅ для дробовика (FBX)
         const texLoader = new THREE.TextureLoader();
         Promise.all([
             new Promise((ok, no) => loader.load(PLAYER_MODEL_PATH,   ok, undefined, no)),
@@ -281,8 +431,8 @@ export class FirstPersonPlayer {
             new Promise((ok, no) => loader.load(PICKAXE_MODEL_PATH,  ok, undefined, no)),
             new Promise((ok, no) => loader.load(AK47_MODEL_PATH,     ok, undefined, no)),
             new Promise((ok, no) => loader.load(BERDANA_MODEL_PATH,  ok, undefined, no)),
-        ]).then(([pg, ag, pkg, kg, bg]) => {
-            // ✅ Параллельно догружаем PBR-текстуры берданки
+            new Promise((ok, no) => fbxLoader.load(SHOTGUN_MODEL_PATH, ok, undefined, no)),
+        ]).then(([pg, ag, pkg, kg, bg, sg]) => {
             const btex = {
                 map: texLoader.load(BERDANA_TEX_BASECOLOR),
                 normalMap: texLoader.load(BERDANA_TEX_NORMAL),
@@ -291,11 +441,20 @@ export class FirstPersonPlayer {
             };
             for (const k in btex) { btex[k].anisotropy = 8; btex[k].colorSpace = THREE.SRGBColorSpace; }
             this._berdanaTex = btex;
-            this._init(pg, ag, pkg, kg, bg);
+            const sgtex = {
+                map: texLoader.load(SHOTGUN_TEX_BASECOLOR),
+                normalMap: texLoader.load(SHOTGUN_TEX_NORMAL),
+                roughnessMap: texLoader.load(SHOTGUN_TEX_ROUGHNESS),
+                metalnessMap: texLoader.load(SHOTGUN_TEX_METALLIC),
+                aoMap: texLoader.load(SHOTGUN_TEX_AO),
+            };
+            for (const k in sgtex) { sgtex[k].anisotropy = 8; sgtex[k].colorSpace = THREE.SRGBColorSpace; }
+            this._shotgunTex = sgtex;
+            this._init(pg, ag, pkg, kg, bg, sg);
         }).catch(e => console.error('[FirstPersonPlayer] Ошибка загрузки:', e));
     }
 
-    _init(pg, ag, pkg, kg, bg) {
+    _init(pg, ag, pkg, kg, bg, sg) {
         const model = pg.scene;
         this.model = model;
         this.handsScene.add(model);
@@ -446,8 +605,10 @@ export class FirstPersonPlayer {
         this.akHolder.position.set(0, 0.05, 0);
         this.akHolder.rotation.set(0, 0, 0);
 
-        /* ✅ КИРКА — ИДЕНТИЧНО топору: берём как есть из glb, без масштабирования */
+        /* ✅ КИРКА — как топор: авто-подгонка (pivot модели не важен), см. fitPickaxeLikeAxe() */
         const pkProto = pkg.scene;
+        fitPickaxeLikeAxe(pkProto, PICKAXE_TARGET_LEN);
+        pkProto.position.y += PICKAXE_PIVOT_Y;
         const walkPK = (o) => {
             if (!o) return;
             if (o.isMesh) {
@@ -509,6 +670,40 @@ export class FirstPersonPlayer {
         this.berdanaHolder.position.set(0, -0.3, 0.05);
         this.berdanaHolder.rotation.set(0, 0, 0);
 
+        /* ✅ ДРОБОВИК (FBX): масштаб так, чтобы длина = 0.85 м, БЕЗ центрирования (точки хвата заданы в координатах модели).
+              Модель кладём в обёртку this.shotgun, повёрнутую так, что локальные оси обёртки = как у АК/берданки:
+              дуло = +Z, верх = +Y (у модели дуло в −X, поворот Y=+90°). */
+        const sgProto = sg;   // FBXLoader возвращает Group напрямую
+        const sgBox = new THREE.Box3().setFromObject(sgProto);
+        const sgSize = sgBox.getSize(new THREE.Vector3());
+        const sgLen = Math.max(sgSize.x, sgSize.y, sgSize.z);
+        if (sgLen > 0.001) {
+            sgProto.scale.multiplyScalar(0.85 / sgLen);
+            sgProto.updateMatrixWorld(true);
+        }
+        const shotgunMat = new THREE.MeshStandardMaterial({
+            map: this._shotgunTex.map,
+            normalMap: this._shotgunTex.normalMap,
+            roughnessMap: this._shotgunTex.roughnessMap,
+            metalnessMap: this._shotgunTex.metalnessMap,
+            aoMap: this._shotgunTex.aoMap,
+            roughness: 1.0, metalness: 1.0, side: THREE.DoubleSide,
+        });
+        const walkSG = (o) => {
+            if (!o) return;
+            if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.material = shotgunMat; }
+            if (o.children) for (const c of o.children) walkSG(c);
+        };
+        walkSG(sgProto);
+        const sgModel = sgProto.clone(true);
+        sgModel.rotation.y = Math.PI / 2;               // дуло (−X модели) → +Z обёртки
+        this.shotgunHolder = new THREE.Group();
+        this.shotgun = new THREE.Group();               // обёртка: её локальные оси = дуло +Z, верх +Y
+        this.shotgun.add(sgModel);
+        this.shotgunHolder.add(this.shotgun);
+        B.RightHand.add(this.shotgunHolder);
+        this.shotgunHolder.visible = false;
+
         this._poseHelpers();
 
         this.loaded = true;
@@ -527,6 +722,7 @@ export class FirstPersonPlayer {
             pickaxe: !!this.pickaxeHolder,
             ak47: !!this.akHolder,
             berdana: !!this.berdanaHolder,
+            shotgun: !!this.shotgunHolder,
         });
     }
 
@@ -634,23 +830,51 @@ export class FirstPersonPlayer {
             this.pickaxe.position.set(0, -G, 0);
         };
 
-        // ✅ placeBerdana — как placeAK, но опускаем на 0.15м ниже к руке
+        // ✅ placeBerdana — рукоять (handle_) берданки кладём в центр правой ладони.
+        //    Точка модели → вектор в базисе кисти: после поворота Ry(90°) локальные (x,y,z) → (z, y, -x) вдоль (f, a, c).
         this.placeBerdana = () => {
-            const H = this.HF.Right;
-            const pos = H.h0.clone()
-                .addScaledVector(H.f, H.palmLen * GRIP_BERDANA.sX)
-                .addScaledVector(H.n, GRIP_BERDANA.sP)
-                .applyMatrix4(H.inv);
-            pos.y -= 0.25;   // ✅ опускаем берданку ниже к руке (было 0.15)
-            this.berdanaHolder.position.copy(pos);
+            const H = this.HF.Right, G = GRIP_BERDANA;
+            const k = this.berdana.scale.x * G.sS;       // метров (в покое) на 1 ед. модели
+            const gv = H.f.clone().multiplyScalar(G.grip.z * k)
+                .addScaledVector(H.a, G.grip.y * k)
+                .addScaledVector(H.c, -G.grip.x * k);
+            const target = H.h0.clone()
+                .addScaledVector(H.f, H.palmLen * G.sA)
+                .addScaledVector(H.n, G.sP);
+            this.berdanaHolder.position.copy(target.sub(gv).applyMatrix4(H.inv));
             const fl = H.f.clone().applyQuaternion(H.wq.clone().invert());
             const al = H.a.clone().applyQuaternion(H.wq.clone().invert());
             const cl = new THREE.Vector3().crossVectors(fl, al);
             const qb = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(fl, al, cl));
-            this.berdanaHolder.quaternion.copy(qb).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), GRIP_BERDANA.sR * D));
-            this.berdanaHolder.scale.setScalar(GRIP_BERDANA.sS / H.ws);
+            this.berdanaHolder.quaternion.copy(qb).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), G.sR * D));
+            this.berdanaHolder.scale.setScalar(G.sS / H.ws);
             this.berdana.position.set(0, 0, 0);
             this.berdana.rotation.set(0, Math.PI / 2, 0);
+        };
+
+        // Точка модели дробовика {x,y,z} (координаты FBX) → локальные координаты обёртки this.shotgun (дуло +Z, верх +Y):
+        // (x, y, z) → (−y, z, −x) · SG_U   (Lcl-поворот −90° по X и разворот Y +90°)
+        this.sgLocal = (p) => new THREE.Vector3(-(p.y || 0), (p.z || 0), -(p.x || 0)).multiplyScalar(SG_U);
+
+        // ✅ placeShotgun — «шейку» приклада кладём в центр правой ладони (как рукоять берданки)
+        this.placeShotgun = () => {
+            const H = this.HF.Right, G = GRIP_SHOTGUN;
+            const g = this.sgLocal(G.grip);
+            const gv = H.f.clone().multiplyScalar(g.z * G.sS)
+                .addScaledVector(H.a, g.y * G.sS)
+                .addScaledVector(H.c, -g.x * G.sS);
+            const target = H.h0.clone()
+                .addScaledVector(H.f, H.palmLen * G.sA)
+                .addScaledVector(H.n, G.sP);
+            this.shotgunHolder.position.copy(target.sub(gv).applyMatrix4(H.inv));
+            const fl = H.f.clone().applyQuaternion(H.wq.clone().invert());
+            const al = H.a.clone().applyQuaternion(H.wq.clone().invert());
+            const cl = new THREE.Vector3().crossVectors(fl, al);
+            const qb = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(fl, al, cl));
+            this.shotgunHolder.quaternion.copy(qb).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), G.sR * D));
+            this.shotgunHolder.scale.setScalar(G.sS / H.ws);
+            this.shotgun.position.set(0, 0, 0);
+            this.shotgun.rotation.set(0, Math.PI / 2, 0);   // как АК/берданка: дуло +Z → вперёд по пальцам
         };
 
         // ✅ Рамка камеры рук (в мировых координатах handsScene): вперёд / вверх / вправо на экране
@@ -677,20 +901,63 @@ export class FirstPersonPlayer {
                 .multiply(new THREE.Quaternion().setFromAxisAngle(c.f, roll * D));
         };
 
-        // ✅ Левая рука на цевье АК — считается от РЕАЛЬНОГО положения автомата в мире.
-        //    Оси АК (в локальных координатах this.ak): ствол/дуло = +Z, верх = +Y.
-        //    Точка модели (x, y, z) → локальная (x, z, -y)  (из-за Sketchfab-поворота в glb).
-        this.poseLeftHandAK = (LL, SL, pole, jit) => {
-            const B = this.bones, G = GRIP_AK_LEFT, H = this.HF.Left;
-            const akW = this.ak.matrixWorld;
-            const fwd   = new THREE.Vector3(0, 0, 1).transformDirection(akW);   // куда смотрит дуло
-            const up    = new THREE.Vector3(0, 1, 0).transformDirection(akW);   // верх автомата
-            const right = new THREE.Vector3().crossVectors(fwd, up).normalize(); // правый бок автомата
-            const unit  = new THREE.Vector3().setFromMatrixScale(akW).x;        // метров на 1 ед. модели
+        // ✅ Профили оружия с «ручным» хватом (АК-47 и БЕРДАНКА) — всё, чем они отличаются.
+        //    У обоих локальные оси объекта: дуло = +Z, верх = +Y (ptLocal переводит точку модели → локальные).
+        this.profiles = {
+            ak47: {
+                name: 'АК-47',
+                obj: () => this.ak,
+                place: () => this.placeAK(),
+                ptLocal: (p) => new THREE.Vector3(p.x || 0, p.z, -p.y),   // АК: Sketchfab-поворот в glb
+                ads: ADS_AK,
+                left: GRIP_AK_LEFT,
+                leftRange: () => [GRIP_AK_LEFT.yPref, GRIP_AK_LEFT.yRear],
+                leftGuard: (t) => new THREE.Vector3(0, GRIP_AK_LEFT.zCenter, -t),
+                halfH: 0.40, halfW: 0.19,                                  // полувысота/полуширина цевья (ед. модели)
+                poses: () => ({ idle: FIDLE_AK, run: F_RUN_AK }),
+                assist: 0,
+            },
+            berdana: {
+                name: 'Берданка',
+                obj: () => this.berdana,
+                place: () => this.placeBerdana(),
+                ptLocal: (p) => new THREE.Vector3(p.x || 0, p.y, p.z),
+                ads: ADS_BERDANA,
+                left: GRIP_BERDANA_LEFT,
+                leftRange: () => [GRIP_BERDANA_LEFT.zPref, GRIP_BERDANA_LEFT.zRear],
+                leftGuard: (t) => new THREE.Vector3(0, GRIP_BERDANA_LEFT.yCenter, t),
+                halfH: 0.0022, halfW: 0.0025,                              // ствол ⌀≈0.0043
+                poses: () => ({ idle: FIDLE_BERDANA, run: F_RUN_BERDANA }),
+                assist: 0.12,   // м: на сколько можно подтянуть оружие к телу, если левая рука не достаёт
+            },
+            // ✅ Дробовик: одна рука (left.enabled=false → левая опущена), прицел и отдача как у остальных
+            shotgun: {
+                name: 'Дробовик',
+                obj: () => this.shotgun,
+                place: () => this.placeShotgun(),
+                ptLocal: (p) => this.sgLocal(p),
+                ads: ADS_SHOTGUN,
+                left: GRIP_SHOTGUN_LEFT,
+                leftRange: () => [GRIP_SHOTGUN_LEFT.zPref, GRIP_SHOTGUN_LEFT.zRear],
+                leftGuard: (t) => new THREE.Vector3(0, GRIP_SHOTGUN_LEFT.yCenter, t),
+                halfH: 0.015, halfW: 0.018,
+                poses: () => ({ idle: FIDLE_SHOTGUN, run: F_RUN_SHOTGUN }),
+                assist: 0,
+            },
+        };
 
+        // Цель для левой руки: куда поставить запястье и как повернуть кисть, чтобы обхватить цевьё/ствол снизу.
+        // Считается от РЕАЛЬНОГО положения оружия в мире. shortfall > 0 — на сколько метров рука не достаёт.
+        this.leftGunTarget = (prof, LL, SL) => {
+            const B = this.bones, G = prof.left;
+            const obj = prof.obj(), objW = obj.matrixWorld;
+            const fwd   = new THREE.Vector3(0, 0, 1).transformDirection(objW);    // куда смотрит дуло
+            const up    = new THREE.Vector3(0, 1, 0).transformDirection(objW);    // верх оружия
+            const right = new THREE.Vector3().crossVectors(fwd, up).normalize();  // правый бок оружия
+            const unit  = new THREE.Vector3().setFromMatrixScale(objW).x;         // метров на 1 ед. модели
             const palmLenW = wp(B.LeftHand).distanceTo(wp(B.LeftHandMiddle1));
 
-            // Куда должна смотреть ладонь (вверх и чуть вправо — к цевью) и куда — пальцы
+            // Ладонь смотрит ВВЕРХ и чуть вправо (к оружию), пальцы — вперёд-вправо вокруг ствола
             const pd = up.clone().addScaledVector(right, G.palmTilt).normalize();
             const fa = G.fingerAng * D;
             const f2 = fwd.clone().multiplyScalar(Math.cos(fa)).addScaledVector(right, Math.sin(fa));
@@ -699,30 +966,36 @@ export class FirstPersonPlayer {
             const c2 = pd.clone().multiplyScalar(-this.SG.Left.curl);
             const a2 = new THREE.Vector3().crossVectors(c2, f2).normalize();
 
-            // Расстояние от центра ладони до оси цевья (полувысота цевья + толщина кисти)
-            const halfExt = (Math.abs(pd.dot(up)) * 0.40 + Math.abs(pd.dot(right)) * 0.19) * unit;
+            // Расстояние от центра ладони до оси цевья/ствола
+            const halfExt = (Math.abs(pd.dot(up)) * prof.halfH + Math.abs(pd.dot(right)) * prof.halfW) * unit;
             const dist = halfExt + G.palmThick * palmLenW;
 
-            // Ищем самую передовую точку цевья, до которой рука достаёт
+            // Ищем самую передовую точку, до которой рука достаёт
             const reachMax = LL * 0.985;
+            const [t0, t1] = prof.leftRange();
             let W = null, bestW = null, bestD = Infinity;
-            for (let yy = G.yPref; yy <= G.yRear + 1e-6; yy += 0.05) {
-                const gc = this.ak.localToWorld(new THREE.Vector3(0, G.zCenter, -yy));
+            const N = 12;
+            for (let i = 0; i < N; i++) {
+                const t = t0 + (t1 - t0) * (i / (N - 1));
+                const gc = obj.localToWorld(prof.leftGuard(t));
                 const w = gc.addScaledVector(pd, -dist).addScaledVector(f2, -G.palmFrac * palmLenW);
                 const d = w.distanceTo(SL);
                 if (d < bestD) { bestD = d; bestW = w; }
                 if (d <= reachMax) { W = w; break; }
             }
-            if (!W) {
-                W = bestW;
-                if (!this._akReachWarned) {
-                    this._akReachWarned = true;
-                    console.warn('[FP] АК: левая рука не достаёт до цевья на ' +
-                        ((bestD - reachMax) * 100).toFixed(1) + ' см (ближайшая точка). ' +
-                        'Подвинь АК ближе к телу (GRIP_AK / FIDLE_AK.rz) или уменьши GRIP_AK_LEFT.yRear.');
-                }
-            }
+            return { W: W || bestW, f2, a2, shortfall: W ? 0 : (bestD - reachMax) };
+        };
 
+        // Левая рука на оружии (АК-47 / берданка)
+        this.poseLeftHandGun = (prof, LL, SL, pole, jit) => {
+            const B = this.bones, G = prof.left, H = this.HF.Left;
+            const T = this.leftGunTarget(prof, LL, SL);
+            const W = T.W, f2 = T.f2, a2 = T.a2;
+            if (T.shortfall > 0 && !prof._warned) {
+                prof._warned = true;
+                console.warn('[FP] ' + prof.name + ': левая рука не достаёт до ствола на ' + (T.shortfall * 100).toFixed(1) +
+                    ' см (ближайшая точка). Подвинь оружие ближе к телу (rx/rz в позе) или уменьши zRear/yRear хвата.');
+            }
             if (jit) W.add(jit);   // дрожь левой кисти при стрельбе
             this.ik(B.LeftArm, B.LeftForeArm, B.LeftHand, W, pole);
 
@@ -737,7 +1010,6 @@ export class FirstPersonPlayer {
                 const ang = Math.atan2(e.dot(new THREE.Vector3().crossVectors(aCur, aTgt)), aCur.dot(aTgt));
                 this.rotW(B.LeftForeArm, e, ang * G.twistShare);
             }
-
             this.orientHand('Left', f2, a2);
             this.fingers('Left', G.curl, G.thumb);
         };
@@ -773,78 +1045,98 @@ export class FirstPersonPlayer {
             const tgt = (S, L, x, y, z) => S.clone().addScaledVector(Rt, x * L).addScaledVector(Ut, y * L).addScaledVector(Ft, z * L);
 
             const LR = this.reach('Right'), SR = wp(B.RightArm);
+            const LL = this.reach('Left'),  SL = wp(B.LeftArm);
             const rightPole = Ut.clone().multiplyScalar(-1).addScaledVector(Rt, 0.5).addScaledVector(Ft, -0.3);
+            const leftPole  = Ut.clone().multiplyScalar(-1).addScaledVector(Rt, -0.5).addScaledVector(Ft, -0.3);
             const cam = this.camFrame;
-            // маленькие смещения автомата (отдача/дрожь) в осях камеры, метры
+            // маленькие смещения оружия (отдача/дрожь) в осях камеры, метры
             const off = new THREE.Vector3()
                 .addScaledVector(cam.r, p.ox || 0).addScaledVector(cam.u, p.oy || 0).addScaledVector(cam.f, p.oz || 0);
-            this.ik(B.RightArm, B.RightForeArm, B.RightHand,
-                tgt(SR, LR, p.rx, p.ry, p.rz).add(off),
-                rightPole);
-            const ph = p.rphi * D;
-            let a2 = Ut.clone().multiplyScalar(Math.cos(ph)).addScaledVector(Ft, Math.sin(ph)).applyAxisAngle(Ut, p.ryaw * D).normalize();
-            const fd = wp(B.RightHand).clone().sub(wp(B.RightForeArm)).normalize();
-            const pr = fd.clone().addScaledVector(a2, -fd.dot(a2));
-            const ln = pr.length(); pr.normalize();
-            const gg = new THREE.Vector3().crossVectors(a2, Rt).normalize();
-            if (gg.dot(pr) < 0) gg.negate();
-            const w = Math.min(1, Math.max(0, (ln - 0.35) / 0.35));
-            const f2 = pr.multiplyScalar(w).addScaledVector(gg, 1 - w).normalize();
 
-            // ✅ Ориентация автомата: обычная формула → (бег) явная рамка → (ПКМ) линия прицела на ось камеры → дрожь
-            const adsK = (this.currentWeapon === 'ak47') ? (p.ads || 0) : 0;
-            let fF = f2.clone(), aF = a2.clone();
-            if ((p.gw || 0) > 0.001) {
-                const ge = this.gunFrame(p.gyaw, p.gpitch, p.groll);
-                fF.lerp(ge.f, p.gw).normalize();
-                aF.lerp(ge.a, p.gw); aF.addScaledVector(fF, -aF.dot(fF)).normalize();
-            }
-            const ADS = ADS_AK;
-            const akAnchor = () => this.ak.localToWorld(new THREE.Vector3(0, ADS.rear.z, -ADS.rear.y)); // целик
-            let Pn = null;
-            if (adsK > 0.001) {
-                // где целик был бы БЕЗ прицеливания (чтобы плавно перейти)
+            // ✅ Оружие с «ручным» хватом (АК-47 / берданка): профиль + прицеливание
+            const prof = this.profiles[this.currentWeapon] || null;
+            const adsK = prof ? (p.ads || 0) : 0;
+
+            // Правая рука + оружие. extra — доп. смещение кисти (подтягивание оружия к телу, если левая не достаёт)
+            const solveRight = (extra) => {
+                const offT = off.clone().add(extra);
+                this.ik(B.RightArm, B.RightForeArm, B.RightHand,
+                    tgt(SR, LR, p.rx, p.ry, p.rz).add(offT),
+                    rightPole);
+                const ph = p.rphi * D;
+                let a2 = Ut.clone().multiplyScalar(Math.cos(ph)).addScaledVector(Ft, Math.sin(ph)).applyAxisAngle(Ut, p.ryaw * D).normalize();
+                const fd = wp(B.RightHand).clone().sub(wp(B.RightForeArm)).normalize();
+                const pr = fd.clone().addScaledVector(a2, -fd.dot(a2));
+                const ln = pr.length(); pr.normalize();
+                const gg = new THREE.Vector3().crossVectors(a2, Rt).normalize();
+                if (gg.dot(pr) < 0) gg.negate();
+                const w = Math.min(1, Math.max(0, (ln - 0.35) / 0.35));
+                const f2 = pr.multiplyScalar(w).addScaledVector(gg, 1 - w).normalize();
+
+                // Ориентация оружия: обычная формула → явная рамка (gw) → (ПКМ) линия прицела на ось камеры → дрожь
+                let fF = f2.clone(), aF = a2.clone();
+                if ((p.gw || 0) > 0.001) {
+                    const ge = this.gunFrame(p.gyaw, p.gpitch, p.groll);
+                    fF.lerp(ge.f, p.gw).normalize();
+                    aF.lerp(ge.a, p.gw); aF.addScaledVector(fF, -aF.dot(fF)).normalize();
+                }
+                const ADS = prof ? prof.ads : null;
+                const anchor = () => prof.obj().localToWorld(prof.ptLocal(ADS.rear));   // целик в мире
+                let Pn = null;
+                if (adsK > 0.001) {
+                    // где целик был бы БЕЗ прицеливания (чтобы плавно перейти)
+                    this.orientHand('Right', fF, aF);
+                    this.model.updateMatrixWorld(true);
+                    prof.place();
+                    this.model.updateMatrixWorld(true);
+                    Pn = anchor();
+                    // ориентация, при которой линия целик→мушка параллельна оси камеры
+                    const rearL = prof.ptLocal(ADS.rear), frontL = prof.ptLocal(ADS.front);
+                    const gam = Math.atan2(frontL.y - rearL.y, frontL.z - rearL.z);
+                    const fA = cam.f.clone().multiplyScalar(Math.cos(gam)).addScaledVector(cam.u, -Math.sin(gam)).normalize();
+                    const aA = cam.u.clone().multiplyScalar(Math.cos(gam)).addScaledVector(cam.f, Math.sin(gam)).normalize();
+                    fF.lerp(fA, adsK).normalize();
+                    aF.lerp(aA, adsK); aF.addScaledVector(fF, -aF.dot(fF)).normalize();
+                }
+                if (p.ppitch || p.pyaw || p.proll) {
+                    const qd = this.gunDelta(p.pyaw || 0, p.ppitch || 0, p.proll || 0);
+                    fF.applyQuaternion(qd); aF.applyQuaternion(qd);
+                }
                 this.orientHand('Right', fF, aF);
-                this.model.updateMatrixWorld(true);
-                this.placeAK();
-                this.model.updateMatrixWorld(true);
-                Pn = akAnchor();
-                // ориентация, при которой линия целик→мушка параллельна оси камеры
-                const gam = Math.atan2(ADS.front.z - ADS.rear.z, ADS.rear.y - ADS.front.y);
-                const fA = cam.f.clone().multiplyScalar(Math.cos(gam)).addScaledVector(cam.u, -Math.sin(gam)).normalize();
-                const aA = cam.u.clone().multiplyScalar(Math.cos(gam)).addScaledVector(cam.f, Math.sin(gam)).normalize();
-                fF.lerp(fA, adsK).normalize();
-                aF.lerp(aA, adsK); aF.addScaledVector(fF, -aF.dot(fF)).normalize();
-            }
-            if (p.ppitch || p.pyaw || p.proll) {
-                const qd = this.gunDelta(p.pyaw || 0, p.ppitch || 0, p.proll || 0);
-                fF.applyQuaternion(qd); aF.applyQuaternion(qd);
-            }
-            this.orientHand('Right', fF, aF);
-            if (adsK > 0.001) {
-                // двигаем кисть так, чтобы целик лёг на ось камеры (в пределах досягаемости руки)
-                this.model.updateMatrixWorld(true);
-                this.placeAK();
-                this.model.updateMatrixWorld(true);
-                const Pa = cam.pos.clone().addScaledVector(cam.f, ADS.dist).add(off);
-                const Pt = Pn.clone().lerp(Pa, adsK);
-                const Wr = wp(B.RightHand).add(Pt.sub(akAnchor()));
-                this.ik(B.RightArm, B.RightForeArm, B.RightHand, Wr, rightPole);
-                this.orientHand('Right', fF, aF);
-            }
-            this.fingers('Right', p.curl, p.thumb);
+                if (adsK > 0.001) {
+                    // двигаем кисть так, чтобы целик лёг на ось камеры (в пределах досягаемости руки)
+                    this.model.updateMatrixWorld(true);
+                    prof.place();
+                    this.model.updateMatrixWorld(true);
+                    const Pa = cam.pos.clone().addScaledVector(cam.f, ADS.dist).add(off);
+                    const Pt = Pn.clone().lerp(Pa, adsK);
+                    const Wr = wp(B.RightHand).add(Pt.sub(anchor()));
+                    this.ik(B.RightArm, B.RightForeArm, B.RightHand, Wr, rightPole);
+                    this.orientHand('Right', fF, aF);
+                }
+                this.fingers('Right', p.curl, p.thumb);
+            };
+            solveRight(new THREE.Vector3());
 
-            const LL = this.reach('Left'), SL = wp(B.LeftArm);
-            const leftPole = Ut.clone().multiplyScalar(-1).addScaledVector(Rt, -0.5).addScaledVector(Ft, -0.3);
-
-            // ✅ АК-47: сначала ставим автомат (он держится на правой руке), потом ведём левую руку к цевью
-            if (this.currentWeapon === 'ak47' && GRIP_AK_LEFT.enabled) {
+            // ✅ АК-47 / берданка: сначала ставим оружие (оно на правой руке), потом ведём левую руку к цевью/стволу
+            if (prof && prof.left.enabled) {
                 this.model.updateMatrixWorld(true);
-                this.placeAK();
+                prof.place();
                 this.model.updateMatrixWorld(true);
+                // Если левая рука не достаёт — чуть подтягиваем оружие к левому плечу (в прицеле не трогаем)
+                if (prof.assist && adsK < 0.5) {
+                    const T0 = this.leftGunTarget(prof, LL, SL);
+                    if (T0.shortfall > 0.004) {
+                        const kk = Math.min(T0.shortfall * 1.05, prof.assist) * (1 - adsK * 2);
+                        solveRight(SL.clone().sub(T0.W).normalize().multiplyScalar(kk));
+                        this.model.updateMatrixWorld(true);
+                        prof.place();
+                        this.model.updateMatrixWorld(true);
+                    }
+                }
                 const jit = new THREE.Vector3()
                     .addScaledVector(Rt, p.ljx || 0).addScaledVector(Ut, p.ljy || 0).addScaledVector(Ft, p.ljz || 0);
-                this.poseLeftHandAK(LL, SL, leftPole, jit);
+                this.poseLeftHandGun(prof, LL, SL, leftPole, jit);
                 this.model.updateMatrixWorld(true);
                 return;
             }
@@ -878,39 +1170,34 @@ export class FirstPersonPlayer {
                 this.placeAK();
             } else if (this.currentWeapon === 'berdana') {
                 this.placeBerdana();
+            } else if (this.currentWeapon === 'shotgun') {
+                this.placeShotgun();
             }
         };
     }
 
     setWeapon(type) {
         this.currentWeapon = type;
-        const showArms = (type === 'axe' || type === 'pickaxe' || type === 'ak47' || type === 'berdana');
+        const showArms = (type === 'axe' || type === 'pickaxe' || type === 'ak47' || type === 'berdana' || type === 'shotgun');
         this._applyVisibility(showArms);
         if (this.axeHolder)      this.axeHolder.visible      = showArms && (type === 'axe');
         if (this.pickaxeHolder)  this.pickaxeHolder.visible  = showArms && (type === 'pickaxe');
         if (this.akHolder)       this.akHolder.visible       = showArms && (type === 'ak47');
         if (this.berdanaHolder)  this.berdanaHolder.visible  = showArms && (type === 'berdana');
+        if (this.shotgunHolder)  this.shotgunHolder.visible  = showArms && (type === 'shotgun');
         this._pendingWeapon = type;
         this._swingType = null;
         this._shootKick = 0;
         this._resetAim();
     }
 
-    // ===== ✅ ПРИЦЕЛИВАНИЕ (ПКМ) =====
+    // ===== ✅ ПРИЦЕЛИВАНИЕ (ПКМ) — АК-47 и берданка =====
     //    БАГ FIX: раньше onCanvas проверял e.target.tagName === 'CANVAS',
     //    но при Pointer Lock события идут на document.body, не на canvas.
     //    Теперь проверяем pointer lock (или что игра активна).
     _initAimInput() {
-        // ✅ Игра активна если: pointer lock включён ИЛИ курсор на canvas
-        const gameActive = () => {
-            if (document.pointerLockElement) return true;  // pointer lock = играем
-            const t = document.activeElement;
-            if (t && t.tagName === 'CANVAS') return true;
-            // ✅ Если курсор на body — тоже разрешаем (при overlay)
-            return true;  // проще всегда разрешать — ПКМ в браузере всё равно блокируется
-        };
         this._onMouseDown = (e) => {
-            if (e.button === 2 && this.currentWeapon === 'ak47') {
+            if (e.button === 2 && this._prof()) {
                 this._aimHeld = true;
             }
         };
@@ -926,6 +1213,9 @@ export class FirstPersonPlayer {
         window.addEventListener('blur', this._onBlur);
     }
 
+    /** Профиль текущего оружия с «ручным» хватом (АК-47 / берданка) или null */
+    _prof() { return (this.profiles && this.profiles[this.currentWeapon]) || null; }
+
     _resetAim() {
         this._aimHeld = false;
         this._ads = 0;
@@ -938,21 +1228,23 @@ export class FirstPersonPlayer {
     get adsAmount() { return this._ads; }
 
     _applyWorldFov(k) {
-        if (!this.camera || ADS_AK.worldFov === 1) return;
-        if (k > 0.001) {
+        if (!this.camera) return;
+        const prof = this._prof();
+        const wf = prof ? prof.ads.worldFov : 1;
+        if (k > 0.001 && wf !== 1) {
             if (this._baseFov == null) this._baseFov = this.camera.fov;
-            this.camera.fov = this._baseFov * (1 + (ADS_AK.worldFov - 1) * k);
+            this.camera.fov = this._baseFov * (1 + (wf - 1) * k);
             this.camera.updateProjectionMatrix();
-        } else if (this._baseFov != null) {
+        } else if (k <= 0.001 && this._baseFov != null) {
             this.camera.fov = this._baseFov;
             this._baseFov = null;
             this.camera.updateProjectionMatrix();
         }
     }
 
-    // ===== ✅ ПОЗА АК-47: idle ↔ бег ↔ прицел + мягкая отдача и дрожь =====
-    _akPose(dt) {
-        const A = ADS_AK, t = this._clock;
+    // ===== ✅ ПОЗА ОРУЖИЯ (АК-47 / берданка): idle ↔ бег ↔ прицел + мягкая отдача и дрожь =====
+    _gunPose(dt, prof) {
+        const A = prof.ads, t = this._clock;
         const sm1 = (cur, tgt, rate) => {
             const n = cur + (tgt - cur) * (1 - Math.exp(-rate * dt));
             return Math.abs(n - tgt) < 0.002 ? tgt : n;
@@ -970,10 +1262,11 @@ export class FirstPersonPlayer {
         this._rec = Math.max(-0.4, Math.min(1.8, this._rec));
         this._shake *= Math.exp(-dt * 7);
 
-        const idle = Object.assign({}, FIDLE_AK);
+        const poses = prof.poses();
+        const idle = Object.assign({}, poses.idle);
         idle.sx += Math.sin(t * 1.8) * 0.8;
         idle.sy += Math.sin(t * 1.5) * 0.5;
-        const run = Object.assign({}, F_RUN_AK);
+        const run = Object.assign({}, poses.run);
         run.sx += Math.sin(t * 8) * 1.2;
         run.gpitch += Math.sin(t * 8) * 1.2;          // лёгкое покачивание при беге
         run.gyaw   += Math.cos(t * 4) * 1.0;
@@ -1030,12 +1323,13 @@ export class FirstPersonPlayer {
     }
 
     setVisible(v) {
-        const showArms = v && (this.currentWeapon === 'axe' || this.currentWeapon === 'pickaxe' || this.currentWeapon === 'ak47' || this.currentWeapon === 'berdana');
+        const showArms = v && (this.currentWeapon === 'axe' || this.currentWeapon === 'pickaxe' || this.currentWeapon === 'ak47' || this.currentWeapon === 'berdana' || this.currentWeapon === 'shotgun');
         this._applyVisibility(showArms);
         if (this.axeHolder)      this.axeHolder.visible      = showArms && (this.currentWeapon === 'axe');
         if (this.pickaxeHolder)  this.pickaxeHolder.visible  = showArms && (this.currentWeapon === 'pickaxe');
         if (this.akHolder)       this.akHolder.visible       = showArms && (this.currentWeapon === 'ak47');
         if (this.berdanaHolder)  this.berdanaHolder.visible  = showArms && (this.currentWeapon === 'berdana');
+        if (this.shotgunHolder)  this.shotgunHolder.visible  = showArms && (this.currentWeapon === 'shotgun');
     }
 
     triggerSwing(type = 'atk1') {
@@ -1049,31 +1343,32 @@ export class FirstPersonPlayer {
 
     triggerShoot() {
         if (!this.loaded || !this.visible) return;
-        // ✅ Отдача работает и для АК, и для берданки
-        if (this.currentWeapon !== 'ak47' && this.currentWeapon !== 'berdana') return;
+        if (this.currentWeapon !== 'ak47' && this.currentWeapon !== 'berdana' && this.currentWeapon !== 'shotgun') return;
         this._shootKick = this._shootKickDur;
         if (this.currentWeapon === 'ak47') {
-            // ✅ ЗИГЗАГ-отдача: каждый выстрел уводит ствол в новую сторону по паттерну
-            //    Паттерн: вверх-вправо-вверх-влево-вверх-вправо... (как реальный АК)
+            // ЗИГЗАГ-отдача по паттерну (вверх-вправо-вверх-влево...)
             this._shotCount = (this._shotCount || 0) + 1;
             const pattern = [
-                { x:  0.0, y: 1.0 },   // 1: прямо вверх
-                { x:  0.8, y: 0.7 },   // 2: вверх-вправо
-                { x:  0.3, y: 1.0 },   // 3: вверх чуть вправо
-                { x: -0.9, y: 0.6 },   // 4: вверх-влево
-                { x: -0.4, y: 1.0 },   // 5: вверх чуть влево
-                { x:  1.0, y: 0.5 },   // 6: сильно вправо
-                { x:  0.5, y: 0.9 },   // 7: вверх-вправо
-                { x: -0.7, y: 0.8 },   // 8: вверх-влево
+                { x:  0.0, y: 1.0 }, { x:  0.8, y: 0.7 }, { x:  0.3, y: 1.0 }, { x: -0.9, y: 0.6 },
+                { x: -0.4, y: 1.0 }, { x:  1.0, y: 0.5 }, { x:  0.5, y: 0.9 }, { x: -0.7, y: 0.8 },
             ];
             const p = pattern[(this._shotCount - 1) % pattern.length];
-            // ✅ Мягкий «пинок» + дрожь
-            this._recV += 38;
-            // ✅ Маленькая тряска рук (было 0.55, теперь 0.3)
-            this._shake = Math.min(this._shake + 0.3, 1.0);
-            // ✅ Зигзаг: боковой увод по паттерну (x), вертикаль всегда вверх (y)
+            this._recV += 22;                                   // мягкий «пинок»
+            this._shake = Math.min(this._shake + 0.18, 1.0);    // лёгкая дрожь
             this._recSide = p.x;
-            this._recVert = p.y;  // ✅ множитель вертикальной отдачи
+            this._recVert = p.y;
+        } else if (this.currentWeapon === 'shotgun') {
+            // ДРОБОВИК: мощный пинок и тряска, сильный случайный увод вбок
+            this._recV += 95;
+            this._shake = Math.min(this._shake + 1.4, 1.8);
+            this._recSide = (Math.random() - 0.5) * 1.6;
+            this._recVert = 1.5;
+        } else {
+            // БЕРДАНКА: слабая отдача (слабее АК)
+            this._recV += 15;
+            this._shake = Math.min(this._shake + 0.12, 1.0);
+            this._recSide = (Math.random() - 0.5) * 0.3;
+            this._recVert = 0.6;
         }
     }
     setRunning(running) {
@@ -1085,36 +1380,11 @@ export class FirstPersonPlayer {
         this._clock += dt;
 
         let p;
-        if (this.currentWeapon === 'ak47') {
-            p = this._akPose(dt);
+        const prof = this._prof();
+        if (prof) {
+            // ✅ АК-47 и берданка: idle / бег / прицел + отдача и дрожь
+            p = this._gunPose(dt, prof);
             this._applyWorldFov(this._ads);
-        } else if (this.currentWeapon === 'berdana') {
-            // Берданка — прежние позы (idle/run/shoot)
-            if (this._shootKick > 0) {
-                const t = 1 - (this._shootKick / this._shootKickDur);
-                // ✅ Плавное затухание kick (smoothstep вместо sin — мягче на пике)
-                const kick = t * t * (3 - 2 * t);  // smoothstep: 0→1
-                // ✅ Для берданки — чуть сильнее отдача (она мощнее)
-                const power = (this.currentWeapon === 'berdana') ? 1.6 : 1.0;
-                p = Object.assign({}, F_SHOOT_BERDANA);
-                // ✅ Минимальное дёргание — чуть назад и плавно обратно
-                p.rx += 0.008 * kick * power;    // наклон ствола вверх
-                p.rphi += 0.3 * kick * power;    // плеч
-                p.lz -= 0.003 * kick * power;    // откат левой руки
-                this._shootKick -= dt;
-                if (this._shootKick < 0) this._shootKick = 0;
-            } else if (this.isRunning) {
-                p = Object.assign({}, F_RUN_BERDANA);
-                p.sx += Math.sin(this._clock * 8) * 1.5;
-                p.ltx = 25 + Math.sin(this._clock * 8) * 5;
-                p.ltk = 35 + Math.cos(this._clock * 8) * 5;
-                p.rtx = -25 - Math.sin(this._clock * 8) * 5;
-                p.rtk = -35 - Math.cos(this._clock * 8) * 5;
-            } else {
-                p = Object.assign({}, FIDLE_AK);
-                p.sx += Math.sin(this._clock * 1.8) * 0.8;
-                p.sy += Math.sin(this._clock * 1.5) * 0.5;
-            }
         } else if (this.currentWeapon === 'axe' || this.currentWeapon === 'pickaxe') {
             // ✅ Кирка использует те же анимации что топор
             if (this._swingType) {
@@ -1145,7 +1415,8 @@ export class FirstPersonPlayer {
         this.handsCamera.position.set(0, 1.7, 0);
         this.handsCamera.up.set(0, 1, 0);
         this.handsCamera.lookAt(0, 1.0, 5);
-        this.handsCamera.fov = 74 + (ADS_AK.fov - 74) * this._ads;
+        const _pr = this._prof();
+        this.handsCamera.fov = 74 + ((_pr ? _pr.ads.fov : 74) - 74) * this._ads;
         this.handsCamera.aspect = this.camera.aspect;
         this.handsCamera.near = 0.02;
         this.handsCamera.far = 200;

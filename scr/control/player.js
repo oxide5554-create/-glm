@@ -106,6 +106,13 @@ export class PlayerController {
             }
             const isObstacle = isTree || isStone || isBarrel || isVehicle || isCrate;
             if (!isObstacle) continue;
+            // ✅ НОВОЕ: vehicle-колайдеры пропускаем тут — они обрабатываются
+            //    через v.resolve() в animate loop (см. main.js). У каждого
+            //    транспорта есть rig.resolve() (настроили через attachCollision
+            //    в vehicles.js / buggy.js) — proper AABB с Y-диапазоном и step-up.
+            //    Если тут тоже проверять vehicles как «точка + радиус 1.5м» — будет
+            //    двойная коллизия и ощущения «застрял в кубе».
+            if (isVehicle) continue;
             // World position коллайдера
             c.getWorldPosition(_v);
             const dx = pos.x - _v.x;

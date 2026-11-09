@@ -381,10 +381,10 @@ export function createTruck(opts = {}) {
   const lay4 = new THREE.Group(); lay4.add(b4); lay4.rotation.z = Math.PI / 2; lay4.position.y = 0.29;
   const h4 = new THREE.Group(); h4.add(lay4); h4.rotation.y = Math.PI / 2 + rn(-0.15, 0.15); h4.position.set(0.74, 1.25, -2.25);
   group.add(h4);
-  const toolboxes = [];
-  toolboxes.push(toolbox(rig, 'toolbox0', group, 0.55, 1.25, -3.3, rn(-0.1, 0.1)));
-  if (R() < 0.6) toolboxes.push(toolbox(rig, 'toolbox1', group, -0.65, 1.25, -3.3, rn(-0.2, 0.2) + Math.PI));
-  for (const [i, z] of [[0, 0.45], [1, 0.0]]) { const j = jerrycan(i ? 0xa8321f : 0x6a7a45); j.position.set(-1.25, 0.95, z - 0.2); j.rotation.y = H; j.scale.setScalar(0.9); group.add(j); }
+  // ✅ УБРАНО: инструментальные ящики (toolbox0, toolbox1) в кузове грузовика —
+  //    пользователь счёл их декорацией. Теперь кузов пустой.
+  // ✅ УБРАНО: jerrycan (канистры) на баке грузовика — тоже декорация.
+  // for (const [i, z] of [[0, 0.45], [1, 0.0]]) { const j = jerrycan(i ? 0xa8321f : 0x6a7a45); j.position.set(-1.25, 0.95, z - 0.2); j.rotation.y = H; j.scale.setScalar(0.9); group.add(j); }
   at(group, rbox(0.06, 0.06, 0.5, 0.01, steel), -1.2, 0.93, 0.0);
   at(group, cyl(0.07, 0.07, 1.8, mk(0x5a4a3e, 0.5, 0.7), 12), 1.28, 2.2, 0.62);
   at(group, cyl(0.09, 0.07, 0.08, steel, 12), 1.28, 3.12, 0.62);
@@ -412,8 +412,20 @@ export function createTruck(opts = {}) {
     { id: 'passenger', pos: new THREE.Vector3(0.5, 1.75, 1.45), yaw: 0, isDriver: false },
   ]);
 
+  // ✅ НОВОЕ: attachCollision с реальными AABB-боксами из массива solids.
+  //    Раньше у грузовика были определены solids/tops, но main.js их НЕ использовал —
+  //    player.js проверял коллизию как «точка + радиус 1.5м», и грузовик ощущался
+  //    как один большой куб (нельзя было подойти вплотную, нельзя было залезть).
+  //    Теперь rig получает метод resolve(pos, radius, height, stepUp) — proper AABB
+  //    с проверкой Y-диапазона и step-up. main.js вызывает его в animate loop.
+  const statics = solids.map(s => bb(
+    s.x - s.hx, s.bottom, s.z - s.hz,
+    s.x + s.hx, s.top,   s.z + s.hz
+  ));
+  attachCollision(rig, group, statics);
+
   return Object.assign(rig, seatData, {
-    group, seed, toolboxes, colliders: [-3, -1.5, 0, 1.5, 3].map((z) => ({ x: 0, z, r: 1.3 })),
+    group, seed, colliders: [-3, -1.5, 0, 1.5, 3].map((z) => ({ x: 0, z, r: 1.3 })),
     tops, solids, isTruck: true,
     setHeadlights: head,
     dispose() {
@@ -495,7 +507,7 @@ export function createWreckCar(opts = {}) {
   at(trunk, rbox(1.7, 0.05, 1.3, 0.02, paint), 0, 0, -0.65); at(trunk, rbox(1.5, 0.02, 1.1, 0.01, trim), 0, -0.04, -0.65);
   at(trunk, rbox(0.3, 0.05, 0.04, 0.01, chrome), 0, 0.03, -1.22);
   at(shell, rbox(1.6, 0.4, 0.05, 0.01, dark), 0, 0.78, -1.02);
-  const cr = crate(rn); cr.position.set(0.1, 0.52, -1.7); shell.add(cr);
+  // ✅ УБРАНО: ящик (crate) в багажнике легковушки — был декорацией.
   at(shell, rbox(0.3, 0.05, 0.08, 0.01, steel), -0.5, 0.55, -2.1).rotation.y = 0.5;
   const doorDefs = [['doorFL', -1, 1.05, 0], ['doorFR', 1, 1.05, 0], ['doorRL', -1, 0.03, 1], ['doorRR', 1, 0.03, 1]];
   for (const [name, sx, hz, rear] of doorDefs) {
@@ -539,8 +551,20 @@ export function createWreckCar(opts = {}) {
     { id: 'passenger', pos: new THREE.Vector3(0.42, 0.95, 0.35), yaw: 0, isDriver: false },
   ]);
 
+  // ✅ НОВОЕ: attachCollision с реальными AABB из массива solids (как в createTruck).
+  //    Даёт rig.resolve(pos, radius, height, stepUp) для proper AABB-коллизии
+  //    с проверкой Y-диапазона и step-up — можно подойти вплотную и залезть.
+  //    shell — это дочерняя группа с повёрнутым/наклонённым кузовом легковушки,
+  //    но solids заданы в координатах shell (как и остальные at(shell, ...)).
+  //    Поэтому attachCollision вызывается для shell, не для group.
+  const statics = solids.map(s => bb(
+    s.x - s.hx, s.bottom, s.z - s.hz,
+    s.x + s.hx, s.top,   s.z + s.hz
+  ));
+  attachCollision(rig, shell, statics);
+
   return Object.assign(rig, seatData, {
-    group, seed, crate: cr, missingWheel: miss, colliders: [-1.5, 0, 1.5].map((z) => ({ x: 0, z, r: 1.0 })),
+    group, seed, missingWheel: miss, colliders: [-1.5, 0, 1.5].map((z) => ({ x: 0, z, r: 1.0 })),
     tops, solids, isTruck: false,
     setHeadlights: head, dispose() { group.traverse((o) => { o.geometry && o.geometry.dispose(); }); group.parent && group.parent.remove(group); },
   });

@@ -1,7 +1,7 @@
 // scr/world/locations/buggy.js — ФИНАЛЬНАЯ ВЕРСИЯ: Пикап + Звуки + Фикс решётки + Исправление ландшафта и коллизий
 import * as THREE from 'three';
 import { kit } from './vehicles.js';
-const { rbox, at, bx, cyl, mk, glassMat, makeRig, wheel, mud, strut, H, TAU, rng } = kit;
+const { rbox, at, bx, cyl, mk, glassMat, makeRig, wheel, mud, strut, H, TAU, rng, attachCollision, bb } = kit;
 
 export function createRustBuggy(opts = {}) {
   const seed = opts.seed ?? (Math.random() * 1e9 | 0);
@@ -257,6 +257,18 @@ export function createRustBuggy(opts = {}) {
     const yaw = new THREE.Euler().setFromQuaternion(_q, 'YXZ').y + s.yaw;
     return { position: world, yaw };
   }
+
+  // ✅ НОВОЕ: attachCollision для багги — proper AABB-коллизия (как у грузовика
+  //    и легковушки). solids заданы в координатах bodyTilt (как и все at(bodyTilt,...)
+  //    вызовы выше), поэтому attachCollision вызывается для bodyTilt.
+  //    Даёт rig.resolve(pos, radius, height, stepUp) — теперь можно подойти к багги
+  //    вплотную, залезть на капот/крышу/кузов, и не проходить сквозь неё.
+  const statics = solids.map(s => bb(
+    s.x - s.hx, s.bottom, s.z - s.hz,
+    s.x + s.hx, s.top,   s.z + s.hz
+  ));
+  attachCollision(rig, bodyTilt, statics);
+
   return Object.assign(rig, {
     group, seed, isBuggy: true, isTruck: false,
     tops, solids,

@@ -1,6 +1,10 @@
 // scr/world/crates.js
 // ✅ Ящики: деревянный, военный, инструментальный, toolbox.
-//    Можно открывать сколько угодно раз. Пустой ящик остаётся.
+//    ✅ НОВОЕ: рандомный лут при каждом спавне/респавне (rollLoot).
+//    ✅ НОВОЕ: пустой ящик исчезает и возвращается через:
+//              - 5 минут  для wooden / tool / toolbox
+//              - 25 минут для military
+//    ✅ НОВОЕ: при респавне лут ПЕРЕ-брасывается (новый random).
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -8,6 +12,16 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const MILITARY_CRATE_PATH = './scr/3d/military_crate.glb';
 const WOODEN_CRATE_PATH  = './scr/3d/wooden_crate.glb';
 
+// ✅ НОВОЕ: таймеры респавна в СЕКУНДАХ (т.к. update(dt) получает dt в секундах).
+const RESPAWN_TIMES_SEC = {
+    wooden:   5 * 60,     // 5 минут
+    tool:     5 * 60,     // 5 минут (инструментальный ящик — обычный)
+    toolbox:  5 * 60,     // 5 минут
+    military: 25 * 60,    // 25 минут (военный — редкий лут, дольше)
+};
+
+// ✅ rollLoot — генерирует случайный лут в зависимости от типа ящика.
+//    Вызывается ПРИ СПАВНЕ и при РЕСПАВНЕ (каждый раз новый random).
 function rollLoot(crateType) {
     const loot = [];
     const rnd = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
@@ -50,6 +64,9 @@ export class CrateManager {
         this.gltfWooden = null;
         this.onOpenCrate = opts.onOpenCrate || (() => {});
         this.getGroundHeight = opts.getGroundHeight || ((x, z) => 0);
+        // ✅ НОВОЕ: ссылка на inventory — нужна чтобы корректно определить
+        //    "ящик пуст" (учитывая и loot, и _slots, и что игрок мог добавить предметы).
+        this.getInventory = opts.getInventory || (() => null);
     }
 
     async load() {
@@ -120,8 +137,13 @@ export class CrateManager {
 
         const crate = {
             group, type, hitbox,
-            loot: rollLoot(type),
+            loot: rollLoot(type),       // ✅ рандомный лут при спавне
             _slots: null,
+            // ✅ НОВОЕ: поля для респавна
+            isEmpty: false,             // ящик пуст (скрыт, ждёт респавна)?
+            respawnTimer: 0,            // сколько секунд осталось до респавна
+            // Сохраняем позицию/поворот чтобы respawn() мог пересоздать визуал
+            _spawnPos: { x, y, z, rotY },
         };
         hitbox.userData.crate = crate;
         model.traverse(o => {
@@ -197,5 +219,71 @@ export class CrateManager {
         return crate.loot;
     }
 
-    update(dt) {}
+    // ✅ НОВОЕ: проверка — ящик полностью пуст?
+    //    Учитываем и crate.loot (после syncToInventory в crateUI.js),
+    //    и crate._slots (если UI ещё открыт и sync не отработал).
+    isCrateEmpty(crate) {
+        if (!crate) return false;
+        // Если _slots есть — это более свежее состояние (UI ещё открыт или только закрылся)
+        if (crate._slots) {
+            // _slots — массив слотов; пустой если каждый слот null/empty
+            for (const s of crate._slots) {
+                if (s && s.id && s.count > 0) return false;
+            }
+            return true;
+        }
+        // Иначе смотрим crate.loot
+        return !crate.loot || crate.loot.length === 0;
+    }
+
+    // ✅ НОВОЕ: скрыть ящик (визуально + из raycast) и запустить таймер респавна.
+    //    Вызывается из update() когда isCrateEmpty()==true и ящик ещё не скрыт.
+    _hideAndScheduleRespawn(crate) {
+        if (crate.isEmpty) return;  // уже скрыт
+        crate.isEmpty = true;
+        crate.respawnTimer = RESPAWN_TIMES_SEC[crate.type] ?? (5 * 60);
+        crate._slots = null;       // сбрасываем слоты UI
+        crate.loot = [];           // явно пустой
+        // Скрываем визуал. visible=false также убирает из raycast
+        // (Three.js Raycaster пропускает невидимые объекты).
+        crate.group.visible = false;
+        crate.hitbox.visible = false;
+        // Сообщение в консоль для отладки
+        const mins = (crate.respawnTimer / 60).toFixed(0);
+        console.log(`[Crates] ${crate.type} ящик пуст — скрыт. Респавн через ${mins} мин.`);
+    }
+
+    // ✅ НОВОЕ: респавн ящика — новый рандомный лут, показываем обратно.
+    _respawn(crate) {
+        crate.isEmpty = false;
+        crate.respawnTimer = 0;
+        crate.loot = rollLoot(crate.type);   // ✅ НОВЫЙ random лут
+        crate._slots = null;
+        crate.group.visible = true;
+        crate.hitbox.visible = true;
+        console.log(`[Crates] ${crate.type} ящик респавнулся — новый лут (${crate.loot.length} stacks).`);
+    }
+
+    // ✅ НОВОЕ: главный update — вызывается каждый кадр из main.js animate loop.
+    //    1. Проверяет пустые ящики → скрывает их + запускает таймер.
+    //    2. Тикает таймеры → респавнит ящики с новым лутом.
+    update(dt) {
+        for (const crate of this.crates) {
+            if (crate.isEmpty) {
+                // Ящик скрыт — тикаем таймер
+                if (crate.respawnTimer > 0) {
+                    crate.respawnTimer -= dt;
+                    if (crate.respawnTimer <= 0) {
+                        this._respawn(crate);
+                    }
+                }
+            } else {
+                // Ящик видимый — проверяем не пустой ли он стал
+                // (игрок мог забрать последний предмет через UI)
+                if (this.isCrateEmpty(crate)) {
+                    this._hideAndScheduleRespawn(crate);
+                }
+            }
+        }
+    }
 }

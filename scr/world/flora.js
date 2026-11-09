@@ -761,7 +761,7 @@ export function createTrees(scene, count = 80, areaSize = 220) {
         tree.position.set(x, getGroundHeight(x, z) - 0.05, z);
         tree.rotation.y = rng() * TAU;
         tree.scale.setScalar(sc);
-        Object.assign(tree.userData, { isTree: true, species: sp, id: 'tree_' + placed, health: 5, maxHealth: 5, falling: false, fallen: false, fallT: 0, fallDir: 1, shakeT: 0, trunkRadius: v.trunkR * sc, height: v.h * sc });
+        Object.assign(tree.userData, { isTree: true, species: sp, id: 'tree_' + placed, health: 28, maxHealth: 28, falling: false, fallen: false, fallT: 0, fallDir: 1, shakeT: 0, trunkRadius: v.trunkR * sc, height: v.h * sc });
         forest.add(tree);
         placed++;
     }

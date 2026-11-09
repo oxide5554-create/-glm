@@ -19,7 +19,10 @@ export class Inventory {
     // 4: скрап
     // 5: АК-47
     this.slots[0] = { item: ITEMS.rock, count: 1 };
-    this.slots[1] = { item: ITEMS.blueprint, count: 1 };
+    // ✅ НОВОЕ: слот 2 (index 1) — дробовик вместо чертежа (плана строителя).
+    //    Чертёж не нужен в хотбаре теперь — он нужен только для стройки (Z),
+    //    а стройку пользователь пока не использует. Дробовик — основное оружие.
+    this.slots[1] = { item: ITEMS.shotgun, count: 1 };
     this.slots[2] = { item: ITEMS.wood, count: 100 };
     this.slots[3] = { item: ITEMS.stone, count: 50 };
     this.slots[4] = { item: ITEMS.scrap, count: 20 };
@@ -112,6 +115,18 @@ export class Inventory {
       // ✅ Показываем хотбар обратно
       const hb = document.getElementById('hotbar');
       if (hb) hb.style.display = '';
+      // ✅ ФИКС: восстанавливаем pointer lock после закрытия инвентаря.
+      //    Раньше после закрытия мыш не захватывалась — игрок не мог продолжить.
+      //    Helper проверяет что нет других открытых меню и вызывает controls.lock().
+      //    Браузер требует user gesture — keydown/click им является, так что сработает.
+      if (typeof window.__requestPointerLock === 'function') {
+        // ✅ Небольшая задержка (50мс) — браузер после exitPointerLock имеет
+        //    "security cooldown" ~50мс, в течение которого requestPointerLock
+        //    молча игнорируется. ждём чтобы гарантированно сработало.
+        setTimeout(() => {
+          if (!this.isOpen) window.__requestPointerLock();
+        }, 50);
+      }
     }
   }
 

@@ -249,15 +249,24 @@ export function createGasStation(opts = {}) {
     return toolbox(rig,name,group,v.x,v.y,v.z,yaw+g.rotation.y);
   };
 
-  const gl = shelf(-7.72,-4.3,H,5.2,.5); tbOn(gl,'toolbox_g0',0,.82,0);
-  const gr = shelf(-1.47,-4.3,-H,5.2,.5); tbOn(gr,'toolbox_g1',.5,1.36,0);
+  // ✅ УБРАНО: инструментальные ящики (toolbox) на полках заправки —
+  //    пользователь счёл их декорацией. Полки остаются пустыми.
+  //    Сами shelf() оставлены — они дают визуальный объект полки + collision box.
+  // const gl = shelf(-7.72,-4.3,H,5.2,.5); tbOn(gl,'toolbox_g0',0,.82,0);
+  // const gr = shelf(-1.47,-4.3,-H,5.2,.5); tbOn(gr,'toolbox_g1',.5,1.36,0);
+  shelf(-7.72,-4.3,H,5.2,.5);
+  shelf(-1.47,-4.3,-H,5.2,.5);
   solid(-7.4,.0,-8.0, -5.0,1.1,-7.25, mk(0x6a6e72,.85,.05));
   at(group, rbox(2.4,.08,.7,.015,mk(0x6a6e72,.85,.05)), -6.2,.95,-7.6);
-  toolbox(rig,'toolbox_g2',group,-5.7,.99,-7.6,rn(-.2,.2));
+  // ✅ УБРАНО: standalone toolbox_g2 на полу
+  // toolbox(rig,'toolbox_g2',group,-5.7,.99,-7.6,rn(-.2,.2));
   
-  const wl = shelf(1.47,-5.35,H,4.7,.5); tbOn(wl,'toolbox_s0',-1.7,.82,0); tbOn(wl,'toolbox_s1',.9,1.36,0);
-  const wb = shelf(4.1,-7.72,0,4.4,.5); tbOn(wb,'toolbox_s2',0,1.9,0);
-  const i2 = shelf(5.2,-4.9,H,3.6,.9); tbOn(i2,'toolbox_s3',0,1.36,.22);
+  // const wl = shelf(1.47,-5.35,H,4.7,.5); tbOn(wl,'toolbox_s0',-1.7,.82,0); tbOn(wl,'toolbox_s1',.9,1.36,0);
+  // const wb = shelf(4.1,-7.72,0,4.4,.5); tbOn(wb,'toolbox_s2',0,1.9,0);
+  // const i2 = shelf(5.2,-4.9,H,3.6,.9); tbOn(i2,'toolbox_s3',0,1.36,.22);
+  shelf(1.47,-5.35,H,4.7,.5);
+  shelf(4.1,-7.72,0,4.4,.5);
+  shelf(5.2,-4.9,H,3.6,.9);
   solid(6.2,0,-2.8, 7,1,-.4, mk(0x6a6e72,.8,.1));
   solid(6.9,0,-7.9, 7.9,2,-4.7, mk(0xc8c8c8,.5,.3));
   for (const x of [3.2,6]) at(group,bx(1.6,.04,.5,emis(0xf2f6ff,1.1)),x,3.74,-4);

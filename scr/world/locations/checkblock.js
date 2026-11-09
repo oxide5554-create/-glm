@@ -5,7 +5,7 @@
 //   cb.group.position.set(x, terrainY, z); scene.add(cb.group);
 //   cb.colliders — круги {x,z,r} в локальных координатах (для коллизий), cb.item — какой предмет выпал.
 import * as THREE from 'three';
-import { createBarrel } from '../boch.js'; // ✅ ДОБАВЛЕН ИМПОРТ
+import { createBreakableBarrel } from '../boch.js'; // ✅ ИЗМЕНЕНО: createBarrel → createBreakableBarrel (GLB модель)
 
 const H = Math.PI / 2, TAU = Math.PI * 2;
 function rng(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -182,16 +182,13 @@ export function createCheckBlock(opts = {}) {
   const it = ITEMS[name](rn); it.g.rotation.y += rn(0, TAU); group.add(it.g); colliders.push({ x: 0, z: 0, r: it.r });
 
   // бочки: одна лежит (с разливом), остальные стоят
-  // ✅ Бочки в чекблоках теперь ломаемые (isBreakableBarrel = true)
+  // ✅ ИЗМЕНЕНО: используем createBreakableBarrel (GLB-модель) вместо createBarrel.
+  //    Бочки теперь используют ту же GLB-модель что и все остальные ломаемые бочки.
   const nb = R() < 0.5 ? 2 : 3, a0 = rn(0, TAU), cols = BARREL_COLORS.slice().sort(() => R() - 0.5);
   for (let i = 0; i < nb; i++) {
     const a = a0 + i * rn(0.7, 1.1), d = rn(1.2, 2.0) + i * 0.15, x = Math.cos(a) * d, z = Math.sin(a) * d;
-    const b = createBarrel(cols[i], i === 2 || (i === 1 && R() < 0.3));
-    // ✅ Делаем бочку ломаемой
-    b.userData.isBreakableBarrel = true;
-    b.userData.health = 3;
-    b.userData.maxHealth = 3;
-    b.userData.barrelColor = cols[i];
+    // ✅ createBreakableBarrel уже устанавливает isBreakableBarrel, health, maxHealth, barrelColor
+    const b = createBreakableBarrel(cols[i]);
     if (i === 0) {
       b.position.y = -0.44; const lay = new THREE.Group(); lay.add(b); lay.rotation.z = H; lay.position.y = 0.29;
       const holder = new THREE.Group(); holder.add(lay); holder.rotation.y = rn(0, TAU); holder.position.set(x, 0, z);
